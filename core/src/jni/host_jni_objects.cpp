@@ -17,9 +17,9 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const JniBackend::Env env = call.env();
         const std::string class_name = read_string(env, call.arg(0), name);
 
+        JniBackend::Ref class_ref = backend.find_class(env, class_name.c_str());
         zb::log("[ZB-CLASS] FindClass: %s -> ref: %lu", class_name.c_str(), class_ref);
-        
-        call.set(local(state, backend.find_class(env, class_name.c_str())));
+        call.set(local(state, class_ref));
         return true;
     }
     case ZB_JNI_HC_GetSuperclass:
