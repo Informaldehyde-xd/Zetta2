@@ -68,6 +68,8 @@ struct HostJni::Impl {
     Impl(LibraryRuntime& runtime, JniBackend& backend, std::size_t slot_capacity)
         : runtime(runtime), backend(backend), slots(slot_capacity) {}
 
+    std::string last_string_utf;
+
     HostJni* owner = nullptr;
     LibraryRuntime& runtime;
     JniBackend& backend;
