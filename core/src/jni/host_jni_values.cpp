@@ -126,21 +126,7 @@ bool HostJni::Impl::serve_values(JniCall& call) {
             backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
     
          if (type == 'L') {
-    static int jni_onload_ll_count = 0;
-    if (kind == ZB_JNI_CALL_STATIC && *shorty == "LL") {
-        jni_onload_ll_count++;
-        if (jni_onload_ll_count == 1) {
-            JniBackend::Ref fake_path = backend.new_string_utf(env, "/data/user/0/com.zettabridge.launcher/files/plugins/com.galapagossoft.trialdemo/base.apk");
-            call.set(local(state, fake_path));
-        } else if (jni_onload_ll_count == 2) {
-            JniBackend::Ref fake_arch = backend.new_string_utf(env, "armeabi-v7a");
-            call.set(local(state, fake_arch));
-        } else {
-            call.set(local(state, result.l));
-        }
-    } else {
-        call.set(local(state, result.l));
-    }
+    call.set(local(state, result.l));
 } else if (type != 'V') {
     call.set64(bits_from_value(type, result));
 }
