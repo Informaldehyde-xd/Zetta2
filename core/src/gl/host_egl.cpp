@@ -235,6 +235,7 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         thread.regs()[1] = 0;
         t_pending_error = kEglSuccess;
         return true;
+    }
     if (index == ZB_EGL_HC_eglCreateContext) {
     Call call(*this, thread, index);
     // Let the generated dispatch run first to create the real context
