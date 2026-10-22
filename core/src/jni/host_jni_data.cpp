@@ -132,7 +132,7 @@ bool HostJni::Impl::serve_data(JniCall& call) {
         const std::string utf = read_string(env, call.arg(0), name);
 
         zb::log("[ZB-STRING] NewStringUTF: %s", utf.c_str());
-        
+        last_string_utf = utf; 
         call.set(local(state, backend.new_string_utf(env, utf.c_str())));
         return true;
     }
