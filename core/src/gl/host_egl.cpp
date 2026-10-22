@@ -1,5 +1,7 @@
 #include "zb/host_egl.h"
 
+#include <EGL/egl.h>
+
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -235,7 +237,24 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         return true;
     }
     if (index == ZB_EGL_HC_eglMakeCurrent) {
+    // Get the real host EGL display, draw, and read surfaces
+    Call call(*this, thread, index);
+    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
+    EGLSurface draw = (EGLSurface)call.handle_of(1, EglObject::Surface);
+    EGLSurface read = (EGLSurface)call.handle_of(2, EglObject::Surface);
+    EGLContext ctx = (EGLContext)call.handle_of(3, EglObject::Context);
+
+    // Actually call the real 64-bit Android EGL driver!
+    if (dpy != EGL_NO_DISPLAY) {
+        EGLBoolean success = ::eglMakeCurrent(dpy, draw, read, ctx);
+        thread.regs()[0] = success ? 1 : 0;
         runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
+    } else {
+        // If the handle lookup failed, fall back to the default dispatch
+        Call fallback_call(*this, thread, index);
+        if (dispatch(fallback_call)) return true;
+    }
+    return true;
     }
     Call call(*this, thread, index);
     if (dispatch(call)) {
