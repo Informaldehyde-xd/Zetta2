@@ -24,8 +24,6 @@ on:
         description: "Keep symbols in libzbridge.so and upload it (for crash analysis)"
         type: boolean
         default: false
-  push:
-    branches: [main]
 
 concurrency:
   group: build-launcher-${{ github.ref }}
