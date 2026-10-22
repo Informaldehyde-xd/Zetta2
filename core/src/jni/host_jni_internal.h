@@ -18,6 +18,7 @@
 #include "zb/jni_hostcalls.h"
 #include "zb/jni_protocol.h"
 
+extern std::string g_last_string_utf;
 namespace zb {
 
 // JNI state of one host thread.
