@@ -235,6 +235,22 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         thread.regs()[1] = 0;
         t_pending_error = kEglSuccess;
         return true;
+    if (index == ZB_EGL_HC_eglCreateContext) {
+    Call call(*this, thread, index);
+    // Let the generated dispatch run first to create the real context
+    if (!dispatch(call)) return false;
+    
+    // Now, force the real Android EGL to make this context current 
+    // on the CURRENT thread, immediately after creation.
+    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
+    EGLContext ctx = (EGLContext)call.handle_of(2, EglObject::Context); // The created context
+    
+    if (dpy != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
+        // We don't have a surface yet, but we can bind it to a surfaceless context
+        ::eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx);
+        log("[ZB-EGL] Forced context %p to be current on thread %d", ctx, gettid());
+    }
+    return true;
     }
     if (index == ZB_EGL_HC_eglMakeCurrent) {
     // Get the real host EGL display, draw, and read surfaces
