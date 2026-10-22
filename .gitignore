@@ -1,0 +1,40 @@
+# build outputs
+build/
+out/
+.gradle/
+*.o
+*.so.dbg
+
+# extracted arm32 system files and downloaded images
+sysroot
+*.img
+*.zip
+
+# test APKs (large, third-party)
+*.apk
+
+# local scratch
+.cache/
+.worktrees/
+
+# local session helpers and screenshots (never commit)
+cc
+cod
+Screenshot_*.jpg
+
+# Gradle wrapper for building the launcher APK on this machine
+!android/launcher/gradlew
+!android/launcher/gradle/wrapper/gradle-wrapper.jar
+!android/launcher/gradle/wrapper/gradle-wrapper.properties
+1.jpg
+2.jpg
+3.jpg
+crash.txt
+tools/__pycache__/
+
+# release signing material: never in the repository
+*.keystore
+*.jks
+signing.properties
+local.properties
+crash.txt.bak

@@ -1,0 +1,221 @@
+# Builds the ZettaBridge launcher APK on GitHub's servers (no PC needed).
+#
+# Start it by hand: Actions tab -> "Build launcher" -> Run workflow. It also runs on every push to main.
+# The finished APK is attached to the run: open the run, scroll to "Artifacts", download, unzip, install.
+#
+# What it does, in the repo's own order:
+#   1. fetch Dynarmic (the translator engine) and apply the repo's two patches to it
+#   2. extract the arm32 Android system libraries from Google's GSI image (cached after the first run)
+#   3. build the arm32 guest pieces, then libzbridge.so + libzbproxy.so for arm64 (the slow part)
+#   4. pack them into build/launcher with tools/make_launcher_bundle.sh
+#   5. build the launcher APK with Gradle
+#
+# Optional signing (so every build can be installed over the previous one without uninstalling):
+# add four repository secrets (Settings -> Secrets and variables -> Actions):
+#   KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+# Without them the workflow builds a debug APK, which is signed with a different temporary key
+# each run, so Android will make you uninstall the old launcher first (and you lose imported games).
+name: Build launcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_symbols:
+        description: "Keep symbols in libzbridge.so and upload it (for crash analysis)"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-launcher-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: 29.0.14206865
+  DYNARMIC_URL: https://github.com/Vita3K/dynarmic
+  DYNARMIC_COMMIT: 86458a0bd369d63ba4c2ef812cacbb6c9080c065
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Make the repo's scripts executable
+        run: |
+          set -eu
+          # A repo made from a zip loses the executable flag, so every script needs it back.
+          chmod +x tools/*.sh tools/*.py android/launcher/gradlew
+          ls -l tools | head -30
+
+      - name: Make sure Dynarmic is present
+        run: |
+          set -eu
+          if [ ! -f third_party/dynarmic/CMakeLists.txt ]; then
+            echo "third_party/dynarmic is empty (repo was made from a zip). Cloning the pinned commit."
+            rm -rf third_party/dynarmic
+            git clone --recursive "$DYNARMIC_URL" third_party/dynarmic
+            git -C third_party/dynarmic checkout "$DYNARMIC_COMMIT"
+            git -C third_party/dynarmic submodule update --init --recursive
+          fi
+          git -C third_party/dynarmic log -1 --format='dynarmic at %H'
+
+      - name: Apply the repo's Dynarmic patches
+        run: |
+          set -eu
+          cd third_party/dynarmic
+          for patch in ../patches/dynarmic-0001-thumb32-armv8.patch ../patches/dynarmic-0002-asimd-narrowing.patch; do
+            if git apply --check "$patch" 2>/dev/null; then
+              git apply "$patch"
+              echo "applied $patch"
+            elif git apply -R --check "$patch" 2>/dev/null; then
+              echo "already applied: $patch"
+            else
+              echo "cannot apply $patch: Dynarmic is not at the pinned commit?" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libboost-dev ninja-build ccache e2fsprogs unzip curl python3
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android NDK r29 and SDK pieces
+        run: |
+          set -eu
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "ndk;${NDK_VERSION}" "platforms;android-35" "build-tools;34.0.0"
+          echo "NDK=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Restore the arm32 sysroot cache
+        id: sysroot-cache
+        uses: actions/cache@v4
+        with:
+          path: sysroot
+          key: sysroot-${{ hashFiles('tools/extract_sysroot.sh') }}
+
+      - name: Extract the arm32 sysroot from the AOSP GSI
+        if: steps.sysroot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          # Fallback if Google's download link has expired: put a sysroot-prebuilt.tar.xz that
+          # contains the folder "sysroot/" in the repo root and it is used instead.
+          if [ -f sysroot-prebuilt.tar.xz ]; then
+            tar -xJf sysroot-prebuilt.tar.xz
+          else
+            tools/extract_sysroot.sh
+            rm -rf .cache/gsi
+          fi
+          ls -l sysroot/system/bin sysroot/system/lib
+
+      - name: Build the arm32 guest pieces
+        run: |
+          set -eu
+          export NDK_HOST=linux-x86_64
+          tools/build_guest.sh
+
+      - name: Cache compiler output
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-android-arm64
+
+      - name: Optional - keep symbols in libzbridge.so
+        if: ${{ inputs.keep_symbols }}
+        run: |
+          set -eu
+          sed -i '/target_link_options(zbridge /s/ -Wl,--strip-all//' core/CMakeLists.txt
+          grep -n "target_link_options(zbridge" core/CMakeLists.txt
+
+      - name: Build libzbridge.so and libzbproxy.so (arm64)
+        run: |
+          set -eu
+          mkdir -p build/boost-headers
+          ln -sfn /usr/include/boost build/boost-headers/boost
+          cmake -S . -B build/android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release -DZB_BUILD_TESTS=OFF \
+            -DBoost_INCLUDE_DIR="$PWD/build/boost-headers" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          # Two jobs: GitHub's free runners have 2 CPUs and 7 GB of memory, and Dynarmic is heavy.
+          ninja -C build/android-arm64 -j2 zbridge zbproxy
+
+      - name: Pack the launcher inputs
+        run: tools/make_launcher_bundle.sh
+
+      - name: Prepare the release key (optional)
+        id: key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -eu
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASSWORD" ]; then
+            mkdir -p "$HOME/.zettabridge"
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$HOME/.zettabridge/release.jks"
+            {
+              echo "storeFile=$HOME/.zettabridge/release.jks"
+              echo "storePassword=$KEYSTORE_PASSWORD"
+              echo "keyAlias=$KEY_ALIAS"
+              echo "keyPassword=$KEY_PASSWORD"
+            } > "$HOME/.zettabridge/signing.properties"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release key found: building a signed release APK."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "No release key: building a debug APK."
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the launcher APK
+        working-directory: android/launcher
+        run: |
+          set -eu
+          chmod +x ./gradlew
+          if [ "${{ steps.key.outputs.signed }}" = "true" ]; then
+            ./gradlew --no-daemon assembleRelease
+          else
+            ./gradlew --no-daemon assembleDebug
+          fi
+
+      - name: Collect the APK
+        run: |
+          set -eu
+          mkdir -p out
+          cp android/launcher/app/build/outputs/apk/*/*.apk out/
+          ls -l out
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZettaBridge-launcher-${{ github.run_number }}
+          path: out/*.apk
+          retention-days: 30
+
+      - name: Upload libzbridge.so with symbols
+        if: ${{ inputs.keep_symbols }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: libzbridge-symbols-${{ github.run_number }}
+          path: build/android-arm64/core/libzbridge.so
+          retention-days: 14
