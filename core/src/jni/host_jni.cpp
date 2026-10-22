@@ -18,6 +18,8 @@
 
 namespace zb {
 
+std::string g_last_string_utf;
+
 namespace {
 
 struct JniHostCallName {
