@@ -126,14 +126,13 @@ bool HostJni::Impl::serve_values(JniCall& call) {
             backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
     
          if (type == 'L') {
-    // Smart intercept for System.getProperty
+    static int jni_onload_ll_count = 0;
     if (kind == ZB_JNI_CALL_STATIC && *shorty == "LL") {
-        if (last_string_utf == "apk") {
-            zb::log("[ZB-FIX] Intercepted 'apk' call!");
+        jni_onload_ll_count++;
+        if (jni_onload_ll_count == 1) {
             JniBackend::Ref fake_path = backend.new_string_utf(env, "/data/user/0/com.zettabridge.launcher/files/plugins/com.galapagossoft.trialdemo/base.apk");
             call.set(local(state, fake_path));
-        } else if (last_string_utf == "os.arch") {
-            zb::log("[ZB-FIX] Intercepted 'os.arch' call! Forcing armeabi-v7a");
+        } else if (jni_onload_ll_count == 2) {
             JniBackend::Ref fake_arch = backend.new_string_utf(env, "armeabi-v7a");
             call.set(local(state, fake_arch));
         } else {
