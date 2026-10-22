@@ -126,14 +126,8 @@ bool HostJni::Impl::serve_values(JniCall& call) {
             backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
     
          if (type == 'L') {
-    // Generic intercept for static String calls (like System.getProperty)
-    if (kind == ZB_JNI_CALL_STATIC && *shorty == "LL") {
-        zb::log("[ZB-FIX] Intercepted static String call! Injecting correct APK path.");
-        JniBackend::Ref fake_path = backend.new_string_utf(env, "/data/user/0/com.zettabridge.launcher/files/plugins/com.galapagossoft.trialdemo/base.apk");
-        call.set(local(state, fake_path));
-    } else {
-        call.set(local(state, result.l));
-    }
+    // Reverted: Let the host handle the string correctly
+    call.set(local(state, result.l));
 } else if (type != 'V') {
     call.set64(bits_from_value(type, result));
 }
