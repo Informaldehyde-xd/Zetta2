@@ -18,7 +18,7 @@
 
 namespace zb {
 
-std::string g_last_string_utf;
+thread_local std::string g_last_string_utf;
 
 namespace {
 
