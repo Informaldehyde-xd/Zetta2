@@ -20,8 +20,6 @@
 
 namespace zb {
 
-extern std::string g_last_string_utf;
-
 // JNI state of one host thread.
 struct JniThread {
     HostJni::Impl* owner = nullptr;
