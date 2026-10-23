@@ -19,7 +19,6 @@ namespace zb {
 
 // Add this to store the active context
 std::uint32_t g_active_context_handle = 0; 
-EGLContext g_active_context = EGL_NO_CONTEXT;
 
 namespace {
 
@@ -232,78 +231,68 @@ std::string egl_recent_calls() {
 
 bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     if (index < kEglHostCallFirst || index > kEglHostCallLast) return false;
-    // A rejection never reaches the driver, so its error is served from here and takes
-    // precedence over the driver's own sticky error.
+    
+    // A rejection never reaches the driver, so its error is served from here
     if (index == ZB_EGL_HC_eglGetError && t_pending_error != kEglSuccess) {
         thread.regs()[0] = static_cast<std::uint32_t>(t_pending_error);
         thread.regs()[1] = 0;
         t_pending_error = kEglSuccess;
         return true;
     }
-    if (index == ZB_EGL_HC_eglCreateContext) {
-    Call call(*this, thread, index);
-    // Let the generated dispatch run first to create the real context
-    if (!dispatch(call)) {
-        g_active_context = (EGLContext)call.handle_of(2, EglObject::Context);
-        log("[ZB-EGL] Saved active context handle: %u", g_active_context_handle); 
-        return true;
-    }
-    return true;
-    }
-    // Now, force the real Android EGL to make this context current 
-    // on the CURRENT thread, immediately after creation.
-    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
-    EGLContext ctx = (EGLContext)call.handle_of(2, EglObject::Context); // The created context
-    
-    if (dpy != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
-        // We don't have a surface yet, but we can bind it to a surfaceless context
-        ::eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx);
-        log("[ZB-EGL] Forced context %p to be current on thread %d", ctx, gettid());
-    }
-    return true;
-    }
-    if (index == ZB_EGL_HC_eglMakeCurrent) {
-    // Get the real host EGL display, draw, and read surfaces
-    Call call(*this, thread, index);
-    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
-    EGLSurface draw = (EGLSurface)call.handle_of(1, EglObject::Surface);
-    EGLSurface read = (EGLSurface)call.handle_of(2, EglObject::Surface);
-    EGLContext ctx = (EGLContext)call.handle_of(3, EglObject::Context);
 
-    // Actually call the real 64-bit Android EGL driver!
-    if (dpy != EGL_NO_DISPLAY) {
-        EGLBoolean success = ::eglMakeCurrent(dpy, draw, read, ctx);
-        thread.regs()[0] = success ? 1 : 0;
-        runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
-    } else {
-        // If the handle lookup failed, fall back to the default dispatch
-        Call fallback_call(*this, thread, index);
-        if (dispatch(fallback_call)) return true;
-    }
-    return true;
-        // --- INTERCEPT eglSwapBuffers ---
-if (index == ZB_EGL_HC_eglSwapBuffers) {
-    Call call(*this, thread, index);
-    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
-    EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
-    
-    if (dpy != EGL_NO_DISPLAY && surface != EGL_NO_SURFACE && g_active_context_handle != 0) {
-        // Look up the real 64-bit context using the saved handle
-        const void* ctx_ptr = lookup(g_active_context_handle, EglObject::Context);
-        if (ctx_ptr != nullptr) {
-            // Force the context onto this specific thread
-            ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_ptr);
+    // --- 1. INTERCEPT CONTEXT CREATION ---
+    if (index == ZB_EGL_HC_eglCreateContext) {
+        Call call(*this, thread, index);
+        if (dispatch(call)) {
+            // The result of eglCreateContext (the 32-bit handle) is now in regs()[0]
+            g_active_context_handle = thread.regs()[0];
+            log("[ZB-EGL] Saved active context handle: %u", g_active_context_handle);
+            return true;
         }
+        return false;
+    }
+
+    // --- 2. INTERCEPT MAKE CURRENT (Keep your existing fix) ---
+    if (index == ZB_EGL_HC_eglMakeCurrent) {
+        Call call(*this, thread, index);
+        EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
+        EGLSurface draw = (EGLSurface)call.handle_of(1, EglObject::Surface);
+        EGLSurface read = (EGLSurface)call.handle_of(2, EglObject::Surface);
+        EGLContext ctx = (EGLContext)call.handle_of(3, EglObject::Context);
+
+        if (dpy != EGL_NO_DISPLAY) {
+            EGLBoolean success = ::eglMakeCurrent(dpy, draw, read, ctx);
+            thread.regs()[0] = success ? 1 : 0;
+            runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
+            return true;
+        }
+        return false;
+    }
+
+    // --- 3. INTERCEPT SWAP BUFFERS (The Deadlock Fixer) ---
+    if (index == ZB_EGL_HC_eglSwapBuffers) {
+        Call call(*this, thread, index);
+        EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
+        EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
         
-        // Now do the swap
-        EGLBoolean result = ::eglSwapBuffers(dpy, surface);
-        thread.regs()[0] = result ? 1 : 0;
-        runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
-        return true;
+        if (dpy != EGL_NO_DISPLAY && surface != EGL_NO_SURFACE && g_active_context_handle != 0) {
+            // Look up the real 64-bit context using the saved 32-bit handle
+            const void* ctx_ptr = lookup(g_active_context_handle, EglObject::Context);
+            if (ctx_ptr != nullptr) {
+                // Force the context onto the current thread right before the swap
+                ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_ptr);
+            }
+            
+            // Perform the actual frame swap
+            EGLBoolean result = ::eglSwapBuffers(dpy, surface);
+            thread.regs()[0] = result ? 1 : 0;
+            runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
+            return true;
+        }
+        return false;
     }
-}
-// --------------------------------
-    }
+
+    // --- 4. DEFAULT DISPATCH (For everything else) ---
     Call call(*this, thread, index);
     if (dispatch(call)) {
         const std::uint64_t slot = g_recent_egl_next.fetch_add(1, std::memory_order_relaxed) % kRecentEglCalls;
@@ -311,8 +300,7 @@ if (index == ZB_EGL_HC_eglSwapBuffers) {
         g_recent_egl[slot].result.store(thread.regs()[0], std::memory_order_relaxed);
         return true;
     }
+    
     log("EGL host call index %u has no generated handler", index);
     return true;
 }
-
-}  // namespace zb
