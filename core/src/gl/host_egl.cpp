@@ -17,6 +17,10 @@
 
 namespace zb {
 
+// Add this to store the active context
+std::uint32_t g_active_context_handle = 0; 
+EGLContext g_active_context = EGL_NO_CONTEXT;
+
 namespace {
 
 // EGL errors are per-thread and sticky until eglGetError reads them. A call rejected here never
@@ -239,8 +243,13 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     if (index == ZB_EGL_HC_eglCreateContext) {
     Call call(*this, thread, index);
     // Let the generated dispatch run first to create the real context
-    if (!dispatch(call)) return false;
-    
+    if (!dispatch(call)) {
+        g_active_context = (EGLContext)call.handle_of(2, EglObject::Context);
+        log("[ZB-EGL] Saved active context handle: %u", g_active_context_handle); 
+        return true;
+    }
+    return true;
+    }
     // Now, force the real Android EGL to make this context current 
     // on the CURRENT thread, immediately after creation.
     EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
@@ -272,6 +281,28 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         if (dispatch(fallback_call)) return true;
     }
     return true;
+        // --- INTERCEPT eglSwapBuffers ---
+if (index == ZB_EGL_HC_eglSwapBuffers) {
+    Call call(*this, thread, index);
+    EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
+    EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
+    
+    if (dpy != EGL_NO_DISPLAY && surface != EGL_NO_SURFACE && g_active_context_handle != 0) {
+        // Look up the real 64-bit context using the saved handle
+        const void* ctx_ptr = lookup(g_active_context_handle, EglObject::Context);
+        if (ctx_ptr != nullptr) {
+            // Force the context onto this specific thread
+            ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_ptr);
+        }
+        
+        // Now do the swap
+        EGLBoolean result = ::eglSwapBuffers(dpy, surface);
+        thread.regs()[0] = result ? 1 : 0;
+        runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
+        return true;
+    }
+}
+// --------------------------------
     }
     Call call(*this, thread, index);
     if (dispatch(call)) {
