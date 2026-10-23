@@ -244,7 +244,6 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     if (index == ZB_EGL_HC_eglCreateContext) {
         Call call(*this, thread, index);
         if (dispatch(call)) {
-            // The result of eglCreateContext (the 32-bit handle) is now in regs()[0]
             g_active_context_handle = thread.regs()[0];
             log("[ZB-EGL] Saved active context handle: %u", g_active_context_handle);
             return true;
@@ -252,7 +251,7 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         return false;
     }
 
-    // --- 2. INTERCEPT MAKE CURRENT (Keep your existing fix) ---
+    // --- 2. INTERCEPT MAKE CURRENT ---
     if (index == ZB_EGL_HC_eglMakeCurrent) {
         Call call(*this, thread, index);
         EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
@@ -269,18 +268,18 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         return false;
     }
 
-    // --- 3. INTERCEPT SWAP BUFFERS (The Deadlock Fixer) ---
+    // --- 3. INTERCEPT SWAP BUFFERS ---
     if (index == ZB_EGL_HC_eglSwapBuffers) {
         Call call(*this, thread, index);
         EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
         EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
         
         if (dpy != EGL_NO_DISPLAY && surface != EGL_NO_SURFACE && g_active_context_handle != 0) {
-            // Look up the real 64-bit context using the saved 32-bit handle
-            const void* ctx_ptr = lookup(g_active_context_handle, EglObject::Context);
-            if (ctx_ptr != nullptr) {
-                // Force the context onto the current thread right before the swap
-                ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_ptr);
+            
+            // FIX: Safely unwrap the optional pointer
+            const auto ctx_opt = lookup(g_active_context_handle, EglObject::Context);
+            if (ctx_opt.has_value() && ctx_opt.value() != nullptr) {
+                ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_opt.value());
             }
             
             // Perform the actual frame swap
@@ -292,7 +291,7 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         return false;
     }
 
-    // --- 4. DEFAULT DISPATCH (For everything else) ---
+    // --- 4. DEFAULT DISPATCH ---
     Call call(*this, thread, index);
     if (dispatch(call)) {
         const std::uint64_t slot = g_recent_egl_next.fetch_add(1, std::memory_order_relaxed) % kRecentEglCalls;
@@ -304,3 +303,5 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     log("EGL host call index %u has no generated handler", index);
     return true;
 }
+
+} //namespace zb
