@@ -122,15 +122,23 @@ bool HostJni::Impl::serve_values(JniCall& call) {
                                 : value_from_bits(letter, bits);
             }
         }
-        const JValue result =
-            backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
-    
-         if (type == 'L') {
-    call.set(local(state, result.l));
-} else if (type != 'V') {
-    call.set64(bits_from_value(type, result));
-}
-return true;
+            const JValue result =
+        backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
+
+    // A Java method that threw leaves a pending exception. The guest cannot clear it
+    // (translated ARM has no JNI exception model), so ART's class linker later asserts.
+    if (backend.exception_check(env)) {
+        log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
+        backend.exception_describe(env);
+        backend.exception_clear(env);
+    }
+
+    if (type == 'L') {
+        call.set(local(state, result.l));
+    } else if (type != 'V') {
+        call.set64(bits_from_value(type, result));
+    }
+    return true;
     }
     case ZB_JNI_HC_GetField: {
         const JniBackend::Env env = call.env();
