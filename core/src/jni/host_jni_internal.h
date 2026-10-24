@@ -80,6 +80,9 @@ struct HostJni::Impl {
     GlobalHandles weaks{HandleKind::WeakGlobal};
     IdTable methods;
     IdTable fields;
+std::atomic<std::uint32_t> dpi_field_id{0};
+std::atomic<std::uint32_t> width_field_id{0};
+std::atomic<std::uint32_t> height_field_id{0};
     std::mutex shorty_mutex;
     std::vector<std::string> shorties;  // index: guest method id - 1
     NativeSlots slots;
