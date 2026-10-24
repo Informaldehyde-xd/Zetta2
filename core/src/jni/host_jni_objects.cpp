@@ -56,9 +56,9 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const std::uint32_t guest_id = fields.intern(backend.get_field_id(env, cls, field.c_str(), signature.c_str(), call.arg(3) != 0));
 
 // Save the IDs so we can fake them later
-if (field == "densityDpi") impl_->dpi_field_id = guest_id;
-if (field == "widthPixels") impl_->width_field_id = guest_id;
-if (field == "heightPixels") impl_->height_field_id = guest_id;
+if (field == "densityDpi") dpi_field_id = guest_id;
+if (field == "widthPixels") width_field_id = guest_id;
+if (field == "heightPixels") height_field_id = guest_id;
 
 call.set(guest_id);
 return true;
