@@ -169,7 +169,7 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         const JniBackend::Id id = field_id(env, call.arg(3), name);
         const std::uint32_t override_dpi = get_override_dpi();
     if (override_dpi > 0 && type == 'I') {
-        if (call.arg(3) == impl_->dpi_field_id) {
+        if (call.arg(3) == dpi_field_id) {
             log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
             call.set64(override_dpi);
             return true;
