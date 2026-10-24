@@ -99,10 +99,11 @@ struct HostJni::Impl {
         JniBackend::Ref global = 0;
         const void* host = nullptr;
     };
+    
     // Total mirrored bytes are capped so a runaway guest cannot exhaust guest memory.
     static constexpr std::uint64_t kMirrorCapBytes = 64u * 1024u * 1024u;
     std::mutex mirror_mutex;
-    std::unordered_map<const void*, BufferMirror> mirrors;
+    std::unordered_map<JniBackend::Ref, BufferMirror> mirrors;
     std::uint64_t mirrored_bytes = 0;
     unsigned mirror_failures = 0;
 
