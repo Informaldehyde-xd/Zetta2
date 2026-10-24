@@ -37,7 +37,11 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
 
         log("[ZB-METHOD] GetMethodID: %s %s", method.c_str(), signature.c_str());
         
-        if (id == 0) return true;
+        if (id == 0) {
+    log("[ZB-METHOD] GetMethodID FAILED: %s %s", method.c_str(), signature.c_str());
+    backend.exception_clear(env);
+    return true;
+        }
         const std::optional<std::string> shorty = shorty_from_signature(signature);
         if (!shorty) fatal(env, "GetMethodID: the backend accepted a malformed signature %s", signature.c_str());
         write_shorty(env, call.arg(4), *shorty, name);
