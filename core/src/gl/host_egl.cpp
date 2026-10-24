@@ -269,7 +269,8 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     }
 
     // --- 3. INTERCEPT SWAP BUFFERS ---
-    if (index == ZB_EGL_HC_eglSwapBuffers) {
+    const char* func_name = kEglHostCalls[index - kEglHostCallFirst].name;
+    if (std::strstr(func_name, "eglSwapBuffers") != nullptr) {
         Call call(*this, thread, index);
         EGLDisplay dpy = (EGLDisplay)call.handle_of(0, EglObject::Display);
         EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
@@ -288,7 +289,7 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
             runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
             return true;
         }
-        return false;
+        return dispatch(call);
     }
 
     // --- 4. DEFAULT DISPATCH ---
