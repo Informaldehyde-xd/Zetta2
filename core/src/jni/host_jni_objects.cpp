@@ -53,8 +53,15 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const JniBackend::Ref cls = ref(0);
         const std::string field = read_string(env, call.arg(1), name);
         const std::string signature = read_string(env, call.arg(2), name);
-        call.set(fields.intern(backend.get_field_id(env, cls, field.c_str(), signature.c_str(), call.arg(3) != 0)));
-        return true;
+        const std::uint32_t guest_id = fields.intern(backend.get_field_id(env, cls, field.c_str(), signature.c_str(), call.arg(3) != 0));
+
+// Save the IDs so we can fake them later
+if (field == "densityDpi") impl_->dpi_field_id = guest_id;
+if (field == "widthPixels") impl_->width_field_id = guest_id;
+if (field == "heightPixels") impl_->height_field_id = guest_id;
+
+call.set(guest_id);
+return true;
     }
     case ZB_JNI_HC_GetMethodShorty: {
         const JniBackend::Env env = call.env();
