@@ -97,6 +97,7 @@ struct HostJni::Impl {
         // into, alive. Without it the collector frees that memory and the write-back lands in
         // whatever ART put there next (a crash inside the collector's own root scan).
         JniBackend::Ref global = 0;
+        const void* host = nullptr;
     };
     // Total mirrored bytes are capped so a runaway guest cannot exhaust guest memory.
     static constexpr std::uint64_t kMirrorCapBytes = 64u * 1024u * 1024u;
