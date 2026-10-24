@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstring>
+#include <cstdio>
 
 #include "zb/log.h"
 
@@ -28,7 +29,8 @@ std::size_t element_size(char type) {
     default:
         return 0;
     }
-    namespace {
+}
+
 std::uint32_t get_override_dpi() {
     static const std::uint32_t dpi = [] {
         const char* path = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-tuning.txt";
@@ -44,7 +46,6 @@ std::uint32_t get_override_dpi() {
     }();
     return dpi;
 }
-} // namespace
 
 // A guest word pair (low, high) as a backend value of the given type.
 JValue value_from_bits(char type, std::uint64_t bits) {
@@ -112,10 +113,9 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         const JniBackend::Id id = method_id(env, method, name);
         const std::optional<std::string> shorty = method_shorty(method);
         if (!shorty) fatal(env, "CallMethodA: jmethodID 0x%08x has no shorty", method);
-        zb::log("[ZB-CALL] Method Call: kind=%u type=%c shorty=%s", kind, type, shorty->c_str());
 
         zb::log("[ZB-CALL] Method Call: kind=%u type=%c shorty=%s", kind, type, shorty->c_str());
-        // A constructor returns V; NewObject asks for the new object ('L').
+
         const bool matches = kind == ZB_JNI_CALL_NEW_OBJECT ? (*shorty)[0] == 'V' && type == 'L' : (*shorty)[0] == type;
         if (!matches) {
             fatal(env, "CallMethodA: result type %c does not match the method shorty %s", type, shorty->c_str());
@@ -124,7 +124,7 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         const JniBackend::Ref cls = ref(3);
 
         zb::log("[ZB-CALL] obj_ref=%lu cls_ref=%lu", obj, cls);
-        
+
         const std::size_t count = shorty->size() - 1;
         std::array<JValue, ZB_JNI_SHORTY_SIZE> values{};
         if (count != 0) {
@@ -138,28 +138,21 @@ bool HostJni::Impl::serve_values(JniCall& call) {
                                 : value_from_bits(letter, bits);
             }
         }
-            const JValue result =
-        backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
+        const JValue result =
+            backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
 
         if (backend.exception_check(env)) {
-    log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
-    backend.exception_describe(env);
-    backend.exception_clear(env);
+            log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
+            backend.exception_describe(env);
+            backend.exception_clear(env);
         }
-    // A Java method that threw leaves a pending exception. The guest cannot clear it
-    // (translated ARM has no JNI exception model), so ART's class linker later asserts.
-    if (backend.exception_check(env)) {
-        log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
-        backend.exception_describe(env);
-        backend.exception_clear(env);
-    }
 
-    if (type == 'L') {
-        call.set(local(state, result.l));
-    } else if (type != 'V') {
-        call.set64(bits_from_value(type, result));
-    }
-    return true;
+        if (type == 'L') {
+            call.set(local(state, result.l));
+        } else if (type != 'V') {
+            call.set64(bits_from_value(type, result));
+        }
+        return true;
     }
     case ZB_JNI_HC_GetField: {
         const JniBackend::Env env = call.env();
@@ -167,17 +160,16 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         if (!is_value_type(type)) fatal(env, "GetField: bad type 0x%x", call.arg(1));
         const JniBackend::Ref obj = ref(2);
         const JniBackend::Id id = field_id(env, call.arg(3), name);
+
         const std::uint32_t override_dpi = get_override_dpi();
-    if (override_dpi > 0 && type == 'I') {
-        if (call.arg(3) == dpi_field_id) {
-            log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
-            call.set64(override_dpi);
-            return true;
+        if (override_dpi > 0 && type == 'I') {
+            if (call.arg(3) == dpi_field_id) {
+                log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
+                call.set64(override_dpi);
+                return true;
+            }
         }
-        // Optional: fake the resolution width/height so the game renders smaller
-        // if (call.arg(3) == impl_->width_field_id) { call.set64(1280); return true; }
-        // if (call.arg(3) == impl_->height_field_id) { call.set64(720); return true; }
-    }
+
         const JValue value = backend.get_field(env, call.arg(0) != 0, type, obj, id);
         if (type == 'L') {
             call.set(local(state, value.l));
