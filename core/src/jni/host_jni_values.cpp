@@ -125,6 +125,11 @@ bool HostJni::Impl::serve_values(JniCall& call) {
             const JValue result =
         backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
 
+        if (backend.exception_check(env)) {
+    log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
+    backend.exception_describe(env);
+    backend.exception_clear(env);
+        }
     // A Java method that threw leaves a pending exception. The guest cannot clear it
     // (translated ARM has no JNI exception model), so ART's class linker later asserts.
     if (backend.exception_check(env)) {
