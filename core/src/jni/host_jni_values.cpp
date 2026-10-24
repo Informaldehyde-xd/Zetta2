@@ -28,7 +28,23 @@ std::size_t element_size(char type) {
     default:
         return 0;
     }
+    namespace {
+std::uint32_t get_override_dpi() {
+    static const std::uint32_t dpi = [] {
+        const char* path = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-tuning.txt";
+        std::FILE* file = std::fopen(path, "re");
+        if (!file) return 0u;
+        char buf[256];
+        std::uint32_t result = 0;
+        while (std::fgets(buf, sizeof(buf), file)) {
+            if (std::sscanf(buf, "override_dpi=%u", &result) == 1) break;
+        }
+        std::fclose(file);
+        return result;
+    }();
+    return dpi;
 }
+} // namespace
 
 // A guest word pair (low, high) as a backend value of the given type.
 JValue value_from_bits(char type, std::uint64_t bits) {
@@ -151,6 +167,17 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         if (!is_value_type(type)) fatal(env, "GetField: bad type 0x%x", call.arg(1));
         const JniBackend::Ref obj = ref(2);
         const JniBackend::Id id = field_id(env, call.arg(3), name);
+        const std::uint32_t override_dpi = get_override_dpi();
+    if (override_dpi > 0 && type == 'I') {
+        if (call.arg(3) == impl_->dpi_field_id) {
+            log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
+            call.set64(override_dpi);
+            return true;
+        }
+        // Optional: fake the resolution width/height so the game renders smaller
+        // if (call.arg(3) == impl_->width_field_id) { call.set64(1280); return true; }
+        // if (call.arg(3) == impl_->height_field_id) { call.set64(720); return true; }
+    }
         const JValue value = backend.get_field(env, call.arg(0) != 0, type, obj, id);
         if (type == 'L') {
             call.set(local(state, value.l));
