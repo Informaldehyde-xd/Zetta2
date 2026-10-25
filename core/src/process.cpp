@@ -338,6 +338,27 @@ if (path == "/system/lib/libEGL.so" || path == "/system/lib/libGLESv2.so" ||
 }
 // --------------------------------------
     {
+        std::string Process::translate_path(const char* guest_path) const {
+    const std::string_view path(guest_path);
+    if (path == "/proc/self/exe") return exe_path_;
+    
+    // --- STUB LIBS PATH FIX (NON-ROOT UNIVERSAL) ---
+    if (path == "/system/lib/libEGL.so" || path == "/system/lib/libGLESv2.so" ||
+        path == "/system/lib/libGLESv1_CM.so" || path == "/system/lib/libandroid.so" ||
+        path == "/system/lib/libjnigraphics.so") {
+        
+        // Find the folder where the current game is located dynamically
+        std::string game_dir = exe_path_.substr(0, exe_path_.find_last_of('/'));
+        
+        // Look for the library in the game's local lib folder
+        std::string stub = game_dir + "/" + std::string(path.substr(12));
+        
+        // If it exists in the game's lib folder, use it!
+        if (::access(stub.c_str(), F_OK) == 0) return stub;
+    }
+    // -----------------------------------------------
+
+    {
         std::lock_guard<std::mutex> lock(path_aliases_mutex_);
         const std::string* best_from = nullptr;
         const std::string* best_to = nullptr;
@@ -356,17 +377,7 @@ if (path == "/system/lib/libEGL.so" || path == "/system/lib/libGLESv2.so" ||
                 std::string out = sysroot_;
                 out += m.sysroot_prefix;
                 out += path.substr(m.guest_prefix.size());
-                // The sysroot holds the 32-bit libraries and nothing else, but guests also read
-                // plain data from the system: fonts (/system/fonts, /system/etc/fonts.xml),
-                // timezone tables, configuration. Those are architecture-independent, so a path
-                // the sysroot does not have falls through to the device's own file. Flutter drew
-                // its icons (a font inside the APK) and no text at all until this fallback
-                // existed, because every /system/fonts lookup landed in the sysroot and failed.
                 if (::access(out.c_str(), F_OK) == 0) return out;
-                static std::atomic<unsigned> fallbacks{0};
-                const unsigned seen = fallbacks.fetch_add(1) + 1;
-                if (seen <= 8) log("sysroot has no %.*s; using the device file",
-                                   static_cast<int>(path.size()), path.data());
                 return std::string(path);
             }
         }
