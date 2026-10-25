@@ -327,24 +327,6 @@ void Process::add_path_alias(std::string guest_prefix, std::string host_prefix) 
 std::string Process::translate_path(const char* guest_path) const {
     const std::string_view path(guest_path);
     if (path == "/proc/self/exe") return exe_path_;
-  // --- STUB LIBS PATH FIX (Patch #20) ---
-// Intercept Android namespace-blocked system libraries and redirect to ZettaBridge's stubs
-if (path == "/system/lib/libEGL.so" || path == "/system/lib/libGLESv2.so" ||
-void Process::add_path_alias(std::string guest_prefix, std::string host_prefix) {
-    if (guest_prefix.empty() || host_prefix.empty()) return;
-    std::lock_guard<std::mutex> lock(path_aliases_mutex_);
-    for (auto& [from, to] : path_aliases_) {
-        if (from == guest_prefix) {
-            to = std::move(host_prefix);
-            return;
-        }
-    }
-    path_aliases_.emplace_back(std::move(guest_prefix), std::move(host_prefix));
-}
-
-std::string Process::translate_path(const char* guest_path) const {
-    const std::string_view path(guest_path);
-    if (path == "/proc/self/exe") return exe_path_;
     
     // --- STUB LIBS PATH FIX (NON-ROOT UNIVERSAL) ---
     if (path == "/system/lib/libEGL.so" || path == "/system/lib/libGLESv2.so" ||
