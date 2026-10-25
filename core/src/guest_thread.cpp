@@ -18,6 +18,8 @@
 
 #include "zb/log.h"
 #include "zb/runtime_report.h"
+#include <fstream>
+#include <string>
 
 namespace zb {
 
@@ -127,7 +129,12 @@ GuestThread::~GuestThread() = default;
 std::array<std::uint32_t, 16>& GuestThread::regs() {
     return jit_->Regs();
 }
-
+std::string get_app_files_dir() {
+    std::ifstream cmdline("/proc/self/cmdline");
+    std::string package_name;
+    std::getline(cmdline, package_name, '\0');
+    return "/storage/emulated/0/Android/data/" + package_name + "/files/";
+}
 std::array<std::uint32_t, 64>& GuestThread::ext_regs() {
     return jit_->ExtRegs();
 }
