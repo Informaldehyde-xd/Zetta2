@@ -1,10 +1,8 @@
 #include "zb/host_egl.h"
 
 #include <EGL/egl.h>
-
 #include <sys/syscall.h>
 #include <unistd.h>
-
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -17,18 +15,12 @@
 
 namespace zb {
 
-// Add this to store the active context
 std::uint32_t g_active_context_handle = 0; 
 
 namespace {
 
-// EGL errors are per-thread and sticky until eglGetError reads them. A call rejected here never
-// reaches the driver, so its error is recorded on this side and shadows the driver's.
 thread_local EGLint t_pending_error = kEglSuccess;
 
-// The object class of handle argument `position` of `index`. Every EGL function that takes a
-// display takes it first; the rest are listed by name. Manual cases pass their class explicitly
-// through Call::handle_of, so only the generated cases need to be covered here.
 EglObject argument_kind(std::uint32_t index, unsigned position) {
     if (position == 0) return EglObject::Display;
     if (index == ZB_EGL_HC_eglDestroyContext) return EglObject::Context;
@@ -58,7 +50,7 @@ const char* kind_name(EglObject kind) {
 EGLint egl_object_error(EglObject kind) {
     switch (kind) {
     case EglObject::Display: return kEglBadDisplay;
-    case EglObject::Config: return kEglBadParameter;  // EGL_BAD_CONFIG
+    case EglObject::Config: return kEglBadParameter;
     case EglObject::Context: return kEglBadContext;
     case EglObject::Surface: return kEglBadSurface;
     }
@@ -68,21 +60,18 @@ EGLint egl_object_error(EglObject kind) {
 HostEgl::Call::Call(HostEgl& host, GuestThread& thread, std::uint32_t index)
     : host_(host), thread_(thread), index_(index),
       regs_{thread.regs()[0], thread.regs()[1], thread.regs()[2], thread.regs()[3]} {
-    // Capture arguments before installing the default zero result.
     thread_.regs()[0] = 0;
     thread_.regs()[1] = 0;
 }
 
 std::uint32_t HostEgl::Call::arg(unsigned position) {
     if (position < 4) return regs_[position];
-    const std::uint64_t address =
-        static_cast<std::uint64_t>(thread_.regs()[13]) + 4u * (position - 4u);
+    const std::uint64_t address = static_cast<std::uint64_t>(thread_.regs()[13]) + 4u * (position - 4u);
     if (address > UINT32_MAX) {
         fail(kEglBadParameter, "argument address overflowed the guest stack");
         return 0;
     }
-    const std::uint8_t* source =
-        host_.runtime().memory().host_ptr(static_cast<std::uint32_t>(address), 4, kPageRead);
+    const std::uint8_t* source = host_.runtime().memory().host_ptr(static_cast<std::uint32_t>(address), 4, kPageRead);
     if (source == nullptr) {
         fail(kEglBadParameter, "argument is not on a readable guest stack");
         return 0;
@@ -95,7 +84,7 @@ std::uint32_t HostEgl::Call::arg(unsigned position) {
 const void* HostEgl::Call::handle_of(unsigned position, EglObject kind) {
     const std::uint32_t handle = arg(position);
     if (!valid_) return nullptr;
-    if (handle == 0) return nullptr;  // EGL_NO_DISPLAY / EGL_NO_CONTEXT / EGL_NO_SURFACE
+    if (handle == 0) return nullptr;
     const std::optional<const void*> value = host_.lookup(handle, kind);
     if (!value) {
         char reason[64];
@@ -164,9 +153,6 @@ std::optional<const void*> HostEgl::lookup(std::uint32_t handle, EglObject kind)
 
 std::uint32_t HostEgl::stub_address(const std::string& name) {
     if (stubs_) return stubs_(name);
-    // Any guest library already loaded, which covers gl* in libGLESv2.so as well as egl*: Skia and
-    // Impeller resolve every GL entry point through eglGetProcAddress, so an EGL-only lookup left
-    // them without a single GL function.
     std::string error;
     const std::uint32_t global = runtime_.find_symbol(ZB_GUEST_RTLD_DEFAULT, name, error);
     if (global != 0) return global;
@@ -199,9 +185,6 @@ std::optional<std::uint32_t> HostEgl::allocate_guest(std::size_t size) {
 #include "gen/egl_dispatch.inc"
 
 namespace {
-
-// The last EGL calls with their results. A guest that dies inside its own code usually died
-// because an EGL call answered zero, and there is no logcat on the device.
 constexpr std::size_t kRecentEglCalls = 24;
 struct RecentEgl {
     std::atomic<std::uint32_t> index{0};
@@ -209,8 +192,7 @@ struct RecentEgl {
 };
 RecentEgl g_recent_egl[kRecentEglCalls];
 std::atomic<std::uint64_t> g_recent_egl_next{0};
-
-}  // namespace
+}
 
 std::string egl_recent_calls() {
     const std::uint64_t next = g_recent_egl_next.load(std::memory_order_relaxed);
@@ -232,7 +214,19 @@ std::string egl_recent_calls() {
 bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     if (index < kEglHostCallFirst || index > kEglHostCallLast) return false;
     
-    // A rejection never reaches the driver, so its error is served from here
+    // --- 0. INTERCEPT GETPROCADDRESS (Fixes graphical freeze) ---
+    if (index == ZB_EGL_HC_eglGetProcAddress) {
+        std::uint32_t name_addr = thread.regs()[0];
+        const char* name = (const char*)runtime_.memory().host_ptr(name_addr, 1, kPageRead);
+        if (name != nullptr) {
+            std::string s_name(name);
+            if (s_name == "eglSwapBuffersWithDamageKHR" || s_name == "eglSwapBuffersWithDamageEXT" || s_name == "eglSwapBuffers") {
+                thread.regs()[0] = stubs_ ? stubs_("eglSwapBuffers") : 0;
+                return true;
+            }
+        }
+    }
+
     if (index == ZB_EGL_HC_eglGetError && t_pending_error != kEglSuccess) {
         thread.regs()[0] = static_cast<std::uint32_t>(t_pending_error);
         thread.regs()[1] = 0;
@@ -276,18 +270,10 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         EGLSurface surface = (EGLSurface)call.handle_of(1, EglObject::Surface);
         
         if (dpy != EGL_NO_DISPLAY && surface != EGL_NO_SURFACE && g_active_context_handle != 0) {
-            
-            // FIX: Safely unwrap the optional pointer
             const auto ctx_opt = lookup(g_active_context_handle, EglObject::Context);
             if (ctx_opt.has_value() && ctx_opt.value() != nullptr) {
                 ::eglMakeCurrent(dpy, surface, surface, (EGLContext)ctx_opt.value());
             }
-            
-            // Perform the actual frame swap
-            EGLBoolean result = ::eglSwapBuffers(dpy, surface);
-            thread.regs()[0] = result ? 1 : 0;
-            runtime_report().note_egl_current(static_cast<std::uint64_t>(::syscall(SYS_gettid)));
-            return true;
         }
         return dispatch(call);
     }
