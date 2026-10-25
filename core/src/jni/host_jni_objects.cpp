@@ -16,7 +16,6 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
     case ZB_JNI_HC_FindClass: {
         const JniBackend::Env env = call.env();
         const std::string class_name = read_string(env, call.arg(0), name);
-
         JniBackend::Ref class_ref = backend.find_class(env, class_name.c_str());
         zb::log("[ZB-CLASS] FindClass: %s -> ref: %lu", class_name.c_str(), class_ref);
         call.set(local(state, class_ref));
@@ -34,16 +33,15 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const std::string method = read_string(env, call.arg(1), name);
         const std::string signature = read_string(env, call.arg(2), name);
         const JniBackend::Id id = backend.get_method_id(env, cls, method.c_str(), signature.c_str(), call.arg(3) != 0);
-
         log("[ZB-METHOD] GetMethodID: %s %s", method.c_str(), signature.c_str());
         
         if (id == 0) {
-    log("[ZB-METHOD] GetMethodID FAILED: %s %s", method.c_str(), signature.c_str());
-    backend.exception_clear(env);
-    return true;
+            log("[ZB-METHOD] GetMethodID FAILED: %s %s", method.c_str(), signature.c_str());
+            backend.exception_clear(env); // FIX: Prevent ART assert abort
+            return true;
         }
         const std::optional<std::string> shorty = shorty_from_signature(signature);
-        if (!shorty) fatal(env, "GetMethodID: the backend accepted a malformed signature %s", signature.c_str());
+        if (!shorty) fatal(env, "GetMethodID: backend accepted malformed signature %s", signature.c_str());
         write_shorty(env, call.arg(4), *shorty, name);
         call.set(intern_method(id, *shorty));
         return true;
@@ -54,14 +52,12 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const std::string field = read_string(env, call.arg(1), name);
         const std::string signature = read_string(env, call.arg(2), name);
         const std::uint32_t guest_id = fields.intern(backend.get_field_id(env, cls, field.c_str(), signature.c_str(), call.arg(3) != 0));
-
-// Save the IDs so we can fake them later
-if (field == "densityDpi") dpi_field_id = guest_id;
-if (field == "widthPixels") width_field_id = guest_id;
-if (field == "heightPixels") height_field_id = guest_id;
-
-call.set(guest_id);
-return true;
+        
+        // FIX: Track the densityDpi field ID for the override
+        if (field == "densityDpi") dpi_field_id = guest_id;
+        
+        call.set(guest_id);
+        return true;
     }
     case ZB_JNI_HC_GetMethodShorty: {
         const JniBackend::Env env = call.env();
@@ -110,11 +106,9 @@ return true;
         call.set(backend.is_same_object(call.env(), ref(0), ref(1)) ? 1 : 0);
         return true;
     case ZB_JNI_HC_GetObjectRefType: {
-        // JNIInvalidRefType 0, JNILocalRefType 1, JNIGlobalRefType 2, JNIWeakGlobalRefType 3.
         const std::uint32_t handle = call.arg(0);
         const std::uint32_t kind = handle & 3u;
-        const bool valid = (kind == 1 && state.locals.get(handle)) || (kind == 2 && globals.get(handle)) ||
-                           (kind == 3 && weaks.get(handle));
+        const bool valid = (kind == 1 && state.locals.get(handle)) || (kind == 2 && globals.get(handle)) || (kind == 3 && weaks.get(handle));
         call.set(handle != 0 && valid ? kind : 0);
         return true;
     }
@@ -180,7 +174,6 @@ return true;
         const JniBackend::Env env = call.env();
         if (state.user_frames == 0) fatal(env, "PopLocalFrame without a matching PushLocalFrame");
         const JniBackend::Ref result = ref(0);
-        // The backend frees the frame's host references itself.
         state.locals.pop_frame();
         --state.user_frames;
         call.set(local(state, backend.pop_local_frame(env, result)));
@@ -200,11 +193,7 @@ return true;
         const JniBackend::Ref cls = ref(0);
         const std::string message = call.arg(1) != 0 ? read_string(env, call.arg(1), name) : std::string();
         zb::log("[ZB-THROW] ThrowNew: %s", message.c_str());
-
-        zb::log("[ZB-THROW] ThrowNew: %s", message.c_str());
-        
-        call.set(static_cast<std::uint32_t>(
-            backend.throw_new(env, cls, call.arg(1) != 0 ? message.c_str() : nullptr)));
+        call.set(static_cast<std::uint32_t>(backend.throw_new(env, cls, call.arg(1) != 0 ? message.c_str() : nullptr)));
         return true;
     }
     case ZB_JNI_HC_ExceptionOccurred:
