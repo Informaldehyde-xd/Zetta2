@@ -15,23 +15,13 @@ namespace zb {
 
 namespace {
 
-// Bytes of one element of a primitive type letter; 0 for anything else.
 std::size_t element_size(char type) {
     switch (type) {
-    case 'Z':
-    case 'B':
-        return 1;
-    case 'C':
-    case 'S':
-        return 2;
-    case 'I':
-    case 'F':
-        return 4;
-    case 'J':
-    case 'D':
-        return 8;
-    default:
-        return 0;
+    case 'Z': case 'B': return 1;
+    case 'C': case 'S': return 2;
+    case 'I': case 'F': return 4;
+    case 'J': case 'D': return 8;
+    default: return 0;
     }
 }
 
@@ -52,7 +42,7 @@ std::uint32_t HostJni::Impl::mirror_direct_buffer(JniBackend::Env env, JniBacken
     std::uint32_t guest = 0;
     {
         std::lock_guard<std::mutex> lock(mirror_mutex);
-        auto found = mirrors.find(buffer); // FIXED: find by Java object
+        auto found = mirrors.find(buffer); // Keyed by Java Buffer
         if (found != mirrors.end()) guest = found->second.guest;
         if (guest == 0 && mirrored_bytes + size > kMirrorCapBytes) {
             ++mirror_failures;
@@ -74,9 +64,8 @@ std::uint32_t HostJni::Impl::mirror_direct_buffer(JniBackend::Env env, JniBacken
         guest = allocated->r0;
     }
     std::lock_guard<std::mutex> lock(mirror_mutex);
-    auto found = mirrors.find(buffer); // FIXED: find by Java object
+    auto found = mirrors.find(buffer);
     if (found == mirrors.end()) {
-        // FIXED: emplace by Java object, save host pointer
         found = mirrors.emplace(buffer, BufferMirror{guest, size, backend.new_global_ref(env, buffer), host}).first;
         mirrored_bytes += size;
     }
@@ -93,7 +82,6 @@ void HostJni::Impl::flush_buffer_mirrors(JniBackend::Env env) {
         const void* host = mirror.global != 0 ? backend.get_direct_buffer_address(env, mirror.global) : nullptr;
         const std::int64_t capacity = host != nullptr ? backend.get_direct_buffer_capacity(env, mirror.global) : 0;
         
-        // FIXED: Compare against mirror.host
         if (host == nullptr || capacity < 0 || static_cast<std::uint64_t>(capacity) < mirror.size || host != mirror.host) {
             log("direct buffer mirror dropped: the Java buffer changed or went away");
             if (mirror.global != 0) backend.delete_global_ref(env, mirror.global);
@@ -104,7 +92,7 @@ void HostJni::Impl::flush_buffer_mirrors(JniBackend::Env env) {
         std::memcpy(const_cast<void*>(host), base + mirror.guest, mirror.size);
         ++it;
     }
-} // Added the missing closing brace here
+}
 
 bool HostJni::Impl::serve_data(JniCall& call) {
     JniThread& state = call.state();
@@ -121,9 +109,8 @@ bool HostJni::Impl::serve_data(JniCall& call) {
     }
     case ZB_JNI_HC_NewStringUTF: {
         const JniBackend::Env env = call.env();
-        if (call.arg(0) == 0) return true;  // ART returns null for a null string
+        if (call.arg(0) == 0) return true;
         const std::string utf = read_string(env, call.arg(0), name);
-
         zb::log("[ZB-STRING] NewStringUTF: %s", utf.c_str());
         last_string_utf = utf; 
         call.set(local(state, backend.new_string_utf(env, utf.c_str())));
@@ -149,7 +136,6 @@ bool HostJni::Impl::serve_data(JniCall& call) {
         std::string utf;
         if (!backend.get_string_utf_region(env, str, sint(1), sint(2), utf)) return true;
         if (call.arg(3) == 0 && utf.empty()) return true;
-        // ART writes the modified UTF-8 bytes and a NUL.
         std::memcpy(writable(env, call.arg(3), utf.size() + 1, name), utf.c_str(), utf.size() + 1);
         return true;
     }
@@ -198,12 +184,10 @@ bool HostJni::Impl::serve_data(JniCall& call) {
         const std::uint32_t address = call.arg(0);
         const auto capacity = static_cast<std::int64_t>(call.arg(1) | (static_cast<std::uint64_t>(call.arg(2)) << 32));
         if (capacity < 0 || capacity > std::numeric_limits<std::int32_t>::max()) {
-            fatal(env, "NewDirectByteBuffer: capacity %lld is outside the 32-bit guest range",
-                  static_cast<long long>(capacity));
+            fatal(env, "NewDirectByteBuffer: capacity %lld is outside the 32-bit guest range", static_cast<long long>(capacity));
         }
         if (capacity > 0 && static_cast<std::uint64_t>(address) + static_cast<std::uint64_t>(capacity) > kGuestSpaceSize) {
-            fatal(env, "NewDirectByteBuffer: 0x%08x + %lld leaves the guest address space", address,
-                  static_cast<long long>(capacity));
+            fatal(env, "NewDirectByteBuffer: 0x%08x + %lld leaves the guest address space", address, static_cast<long long>(capacity));
         }
         void* host = address != 0 ? runtime.memory().base() + address : nullptr;
         call.set(local(state, backend.new_direct_byte_buffer(env, host, capacity)));
@@ -214,28 +198,18 @@ bool HostJni::Impl::serve_data(JniCall& call) {
         const JniBackend::Ref buffer = ref(0);
         const auto* host = static_cast<const std::uint8_t*>(backend.get_direct_buffer_address(env, buffer));
         const std::uint8_t* base = runtime.memory().base();
-        const bool inside = host != nullptr && host >= base &&
-                            static_cast<std::uint64_t>(host - base) < kGuestSpaceSize;
+        const bool inside = host != nullptr && host >= base && static_cast<std::uint64_t>(host - base) < kGuestSpaceSize;
         std::uint32_t answer = 0;
         const char* failure = "";
         bool mirrored = false;
         if (inside) {
-            // A buffer the guest itself made with NewDirectByteBuffer: hand over its own address.
             answer = static_cast<std::uint32_t>(host - base);
         } else if (host != nullptr) {
-            // A direct buffer Java allocated lives outside the guest's 4 GiB space, so its host
-            // address cannot be handed over. Mirror it into guest memory instead; the guest reads
-            // a real copy rather than NULL (Flutter copies from this pointer at once).
-            // Recorded before mirroring: if the guest allocation below never returns, the report
-            // still shows how far this call got.
-            runtime_report().note_jni_detail("direct-buffer-last-request",
-                                             "host=" + std::to_string(reinterpret_cast<std::uintptr_t>(host)), true);
-            answer = mirror_direct_buffer(env, buffer, host,
-                                          backend.get_direct_buffer_capacity(env, buffer), failure);
+            runtime_report().note_jni_detail("direct-buffer-last-request", "host=" + std::to_string(reinterpret_cast<std::uintptr_t>(host)), true);
+            answer = mirror_direct_buffer(env, buffer, host, backend.get_direct_buffer_capacity(env, buffer), failure);
             mirrored = answer != 0;
         }
         call.set(answer);
-        // Record every answer: a guest that trusts this pointer crashes far away from here.
         static std::atomic<unsigned> answered{0};
         const unsigned seen = answered.fetch_add(1) + 1;
         if (seen <= 4) {
@@ -250,13 +224,11 @@ bool HostJni::Impl::serve_data(JniCall& call) {
             std::lock_guard<std::mutex> lock(mirror_mutex);
             runtime_report().note_jni_detail("direct-buffer-mirrored-bytes", std::to_string(mirrored_bytes), true);
             if (mirror_failures != 0) {
-                runtime_report().note_jni_detail("direct-buffer-mirror-failures",
-                                                 std::to_string(mirror_failures), true);
+                runtime_report().note_jni_detail("direct-buffer-mirror-failures", std::to_string(mirror_failures), true);
             }
         }
         if (!inside && host != nullptr && !mirrored && !logged_foreign_buffer.exchange(true)) {
-            log("GetDirectBufferAddress: the buffer lies outside guest memory and could not be "
-                "mirrored (%s); returning NULL (logged once)", failure);
+            log("GetDirectBufferAddress: buffer outside guest memory, could not mirror (%s); returning NULL", failure);
         }
         return true;
     }
