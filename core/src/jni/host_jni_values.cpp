@@ -4,6 +4,8 @@
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <string>
 
 #include "zb/log.h"
 
@@ -11,30 +13,31 @@ namespace zb {
 
 namespace {
 
-// Bytes of one element of a primitive type letter; 0 for anything else.
 std::size_t element_size(char type) {
     switch (type) {
-    case 'Z':
-    case 'B':
-        return 1;
-    case 'C':
-    case 'S':
-        return 2;
-    case 'I':
-    case 'F':
-        return 4;
-    case 'J':
-    case 'D':
-        return 8;
-    default:
-        return 0;
+    case 'Z': case 'B': return 1;
+    case 'C': case 'S': return 2;
+    case 'I': case 'F': return 4;
+    case 'J': case 'D': return 8;
+    default: return 0;
     }
+}
+
+// Helper to find the universal external storage path dynamically
+std::string get_app_files_dir() {
+    static const std::string dir = [] {
+        std::ifstream cmdline("/proc/self/cmdline");
+        std::string package_name;
+        std::getline(cmdline, package_name, '\0');
+        return "/storage/emulated/0/Android/data/" + package_name + "/files/";
+    }();
+    return dir;
 }
 
 std::uint32_t get_override_dpi() {
     static const std::uint32_t dpi = [] {
-        const char* path = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-tuning.txt";
-        std::FILE* file = std::fopen(path, "re");
+        std::string path = get_app_files_dir() + "zb-tuning.txt";
+        std::FILE* file = std::fopen(path.c_str(), "re");
         if (!file) return 0u;
         char buf[256];
         std::uint32_t result = 0;
@@ -47,7 +50,6 @@ std::uint32_t get_override_dpi() {
     return dpi;
 }
 
-// A guest word pair (low, high) as a backend value of the given type.
 JValue value_from_bits(char type, std::uint64_t bits) {
     JValue value{};
     switch (type) {
@@ -68,7 +70,6 @@ JValue value_from_bits(char type, std::uint64_t bits) {
     return value;
 }
 
-// A backend value as the guest's 64-bit result (r0:r1). References are converted by the caller.
 std::uint64_t bits_from_value(char type, const JValue& value) {
     switch (type) {
     case 'Z': return value.z;
@@ -113,18 +114,15 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         const JniBackend::Id id = method_id(env, method, name);
         const std::optional<std::string> shorty = method_shorty(method);
         if (!shorty) fatal(env, "CallMethodA: jmethodID 0x%08x has no shorty", method);
-
+        
         zb::log("[ZB-CALL] Method Call: kind=%u type=%c shorty=%s", kind, type, shorty->c_str());
-
+        
         const bool matches = kind == ZB_JNI_CALL_NEW_OBJECT ? (*shorty)[0] == 'V' && type == 'L' : (*shorty)[0] == type;
-        if (!matches) {
-            fatal(env, "CallMethodA: result type %c does not match the method shorty %s", type, shorty->c_str());
-        }
+        if (!matches) fatal(env, "CallMethodA: result type %c does not match the method shorty %s", type, shorty->c_str());
+        
         const JniBackend::Ref obj = ref(2);
         const JniBackend::Ref cls = ref(3);
-
-        zb::log("[ZB-CALL] obj_ref=%lu cls_ref=%lu", obj, cls);
-
+        
         const std::size_t count = shorty->size() - 1;
         std::array<JValue, ZB_JNI_SHORTY_SIZE> values{};
         if (count != 0) {
@@ -133,14 +131,12 @@ bool HostJni::Impl::serve_values(JniCall& call) {
                 std::uint64_t bits;
                 std::memcpy(&bits, raw + 8 * i, sizeof bits);
                 const char letter = (*shorty)[i + 1];
-                values[i] = letter == 'L'
-                                ? value_from_bits('L', resolve(state, static_cast<std::uint32_t>(bits), name))
-                                : value_from_bits(letter, bits);
+                values[i] = letter == 'L' ? value_from_bits('L', resolve(state, static_cast<std::uint32_t>(bits), name)) : value_from_bits(letter, bits);
             }
         }
-        const JValue result =
-            backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
-
+        const JValue result = backend.call_method(env, static_cast<JniCallKind>(kind), type, obj, cls, id, values.data());
+    
+        // FIX: Clear exception to prevent ART assert crash
         if (backend.exception_check(env)) {
             log("[ZB-CALL] CallMethodA threw - clearing to prevent ART assert");
             backend.exception_describe(env);
@@ -160,14 +156,13 @@ bool HostJni::Impl::serve_values(JniCall& call) {
         if (!is_value_type(type)) fatal(env, "GetField: bad type 0x%x", call.arg(1));
         const JniBackend::Ref obj = ref(2);
         const JniBackend::Id id = field_id(env, call.arg(3), name);
-
+        
+        // FIX: DPI Override logic
         const std::uint32_t override_dpi = get_override_dpi();
-        if (override_dpi > 0 && type == 'I') {
-            if (call.arg(3) == dpi_field_id) {
-                log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
-                call.set64(override_dpi);
-                return true;
-            }
+        if (override_dpi > 0 && type == 'I' && call.arg(3) == dpi_field_id) {
+            log("[ZB-DPI] Overriding densityDpi to %u", override_dpi);
+            call.set64(override_dpi);
+            return true;
         }
 
         const JValue value = backend.get_field(env, call.arg(0) != 0, type, obj, id);
