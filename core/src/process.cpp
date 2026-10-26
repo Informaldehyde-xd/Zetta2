@@ -332,15 +332,26 @@ std::string Process::translate_path(const char* guest_path) const {
         path == "/system/lib/libGLESv1_CM.so" || path == "/system/lib/libandroid.so" ||
         path == "/system/lib/libjnigraphics.so") {
         
-        // 1. Check the game's APK folder first
+        std::string base_name = std::string(path.substr(12)); // Grabs "libEGL.so", etc.
+
+        // 1. Check the game's own APK folder first
         std::string game_dir = exe_path_.substr(0, exe_path_.find_last_of('/'));
-        std::string game_stub = game_dir + "/" + std::string(path.substr(12));
+        std::string game_stub = game_dir + "/" + base_name;
         if (::access(game_stub.c_str(), F_OK) == 0) return game_stub;
         
-        // 2. THE VIVO FIX: Fallback to ZettaBridge's internal sysroot
+        // 2. Check ZettaBridge's internal sysroot
         if (!sysroot_.empty()) {
-            std::string sysroot_stub = sysroot_ + "/system/lib/" + std::string(path.substr(12));
+            std::string sysroot_stub = sysroot_ + "/system/lib/" + base_name;
             if (::access(sysroot_stub.c_str(), F_OK) == 0) return sysroot_stub;
+        }
+
+        // 3. Check ZettaBridge's extracted guest assets
+        std::ifstream cmdline("/proc/self/cmdline");
+        std::string pkg_name;
+        std::getline(cmdline, pkg_name, '\0');
+        if (!pkg_name.empty()) {
+            std::string guest_lib_stub = "/data/data/" + pkg_name + "/files/zb/guest/lib/" + base_name;
+            if (::access(guest_lib_stub.c_str(), F_OK) == 0) return guest_lib_stub;
         }
     }
     // -----------------------------------------------
