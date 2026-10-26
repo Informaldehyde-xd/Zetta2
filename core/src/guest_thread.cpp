@@ -87,9 +87,15 @@ void store(std::uint8_t* p, T v) {
 GuestThread::GuestThread(GuestMemory& mem, Dynarmic::ExclusiveMonitor* monitor, std::size_t processor_id,
                          bool precise_faults, std::size_t code_cache_size)
     : mem_(mem), processor_id_(processor_id) {
+    
+    // Add these two lines to stop the unused parameter warnings
+    (void)precise_faults;
+    (void)code_cache_size;
+
     cp15_ = std::make_shared<Cp15>(&tpidruro_, &tpidrurw_);
 
     Dynarmic::A32::UserConfig cfg;
+    // ... rest of your constructor
     cfg.callbacks = this;
     cfg.global_monitor = monitor;
     cfg.processor_id = processor_id;
