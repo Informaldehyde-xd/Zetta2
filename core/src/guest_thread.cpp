@@ -105,6 +105,9 @@ cfg.coprocessors[15] = cp15_;
 cfg.define_unpredictable_behaviour = true;
 cfg.enable_cycle_counting = false;
 
+// Keep precise faults ALWAYS on, or the engine crashes on bad memory reads.
+cfg.check_halt_on_memory_access = precise_faults; 
+cfg.code_cache_size = 128 * 1024 * 1024; // 128MB is still safe and fast!
 #ifdef ZB_STOCK_BUILD
     // Stock: Speed over accuracy
     cfg.check_halt_on_memory_access = false; // Fast memory faults
