@@ -15,6 +15,8 @@
 #include <chrono>
 #include <exception>
 #include <mutex>
+#include <fstream> // Added for dynamic paths
+#include <string>
 
 #include <cerrno>
 #include <climits>
@@ -42,6 +44,17 @@
 namespace zb {
 
 namespace {
+
+// Helper to find the universal external storage path dynamically
+std::string get_app_files_dir() {
+    static const std::string dir = [] {
+        std::ifstream cmdline("/proc/self/cmdline");
+        std::string package_name;
+        std::getline(cmdline, package_name, '\0');
+        return "/storage/emulated/0/Android/data/" + package_name + "/files/";
+    }();
+    return dir;
+}
 
 // arch/arm/include/uapi/asm/hwcap.h
 constexpr std::uint32_t kHwcapHalf = 1u << 1;
@@ -96,22 +109,13 @@ std::pair<const char*, const char*> host_call_name(std::uint32_t index) {
 }  // namespace
 
 // ---- host call profiler -------------------------------------------------------------------------
-// Where does the time of a translated game go: in the translated code itself, or in the host calls
-// it makes (OpenGL, EGL, JNI, ...)? Every host call is timed here, and the busiest ones are written
-// to zb-profile.txt every few seconds (the file is replaced each time, so it always holds the
-// latest busy window). Waiting counts too: a call that blocks (eglSwapBuffers waiting for the
-// display) shows its whole wait, which is not CPU time. A host call that is cheap and very
-// frequent can still cost a lot, because every one of them leaves translated code and comes back.
 namespace {
 
-// Same directory as zb-runtime-report.txt. Change the package name if you rename it.
-constexpr const char* kProfileFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-profile.txt";
-constexpr const char* kFreezeFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-freeze.txt";
-constexpr const char* kPcProfileFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-pcprofile.txt";
-// The latest busy window is replaced as the game goes on (a pause or a menu would otherwise
-// overwrite the interesting one), so the busiest window seen so far is kept in a file of its own.
-constexpr const char* kProfileBestFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-profile-busiest.txt";
-constexpr const char* kPcProfileBestFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-pcprofile-busiest.txt";
+const std::string kProfileFile = get_app_files_dir() + "zb-profile.txt";
+const std::string kFreezeFile = get_app_files_dir() + "zb-freeze.txt";
+const std::string kPcProfileFile = get_app_files_dir() + "zb-pcprofile.txt";
+const std::string kProfileBestFile = get_app_files_dir() + "zb-profile-busiest.txt";
+const std::string kPcProfileBestFile = get_app_files_dir() + "zb-pcprofile-busiest.txt";
 constexpr std::size_t kProfileSlots = 0x10000;  // a host call index is 16 bits
 constexpr std::chrono::seconds kProfileWindow{5};
 constexpr std::size_t kProfileRows = 18;
@@ -139,8 +143,8 @@ inline std::uint64_t tick_frequency() {
 #endif
 }
 
-inline void write_text_file(const char* path, const std::string& text) {
-    const int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+inline void write_text_file(const std::string& path, const std::string& text) {
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd >= 0) {
         [[maybe_unused]] const ssize_t written = ::write(fd, text.data(), text.size());
         ::close(fd);
@@ -162,7 +166,6 @@ struct PathMapping {
     std::string_view sysroot_prefix;
 };
 
-// The runtime APEX paths collapse onto the bootstrap copies extracted into system/.
 constexpr PathMapping kPathMappings[] = {
     {"/apex/com.android.runtime/lib/bionic/", "/system/lib/"},
     {"/apex/com.android.runtime/bin/", "/system/bin/"},
@@ -199,10 +202,6 @@ void write_guest_u32(GuestMemory& mem, std::uint32_t addr, std::uint32_t value) 
     if (std::uint8_t* p = mem.host_ptr(addr, 4, kPageWrite)) std::memcpy(p, &value, 4);
 }
 
-// Linux ARM kernel user helpers (arch/arm/kernel/entry-armv.S, SMP variants), ARM mode and
-// position independent. Encodings from the NDK assembler. Real ARMv5 (armeabi) code calls
-// these for atomics and TLS. Version 3 advertises get_tls, cmpxchg and memory_barrier;
-// cmpxchg64 (version 5) is not provided.
 constexpr std::uint32_t kKuserPage = 0xFFFF0000;
 constexpr std::uint32_t kKuserHostReturn[] = {
     0xef5affff,  // svc #0x5affff
@@ -333,13 +332,9 @@ std::string Process::translate_path(const char* guest_path) const {
         path == "/system/lib/libGLESv1_CM.so" || path == "/system/lib/libandroid.so" ||
         path == "/system/lib/libjnigraphics.so") {
         
-        // Find the folder where the current game is located dynamically
         std::string game_dir = exe_path_.substr(0, exe_path_.find_last_of('/'));
-        
-        // Look for the library in the game's local lib folder
         std::string stub = game_dir + "/" + std::string(path.substr(12));
         
-        // If it exists in the game's lib folder, use it!
         if (::access(stub.c_str(), F_OK) == 0) return stub;
     }
     // -----------------------------------------------
@@ -407,8 +402,6 @@ GuestThread* Process::find_thread(std::int32_t tid) {
 }
 
 bool Process::post_signal_to(std::int32_t tid, const g::siginfo32& info) {
-    // post_signal takes no Process lock (atomics and a futex wake), so holding threads_mutex_
-    // here cannot deadlock.
     std::lock_guard<std::mutex> lock(threads_mutex_);
     for (GuestThread* t : borrowers_) {
         if (t->tid == tid) {
@@ -428,8 +421,7 @@ bool Process::post_signal_to(std::int32_t tid, const g::siginfo32& info) {
 std::unique_ptr<GuestThread> Process::create_borrower(GuestThread& carrier) {
     const int processor_id = allocate_processor_id();
     if (processor_id < 0) return nullptr;
-    auto borrower =
-        std::make_unique<GuestThread>(mem_, monitor_.get(), static_cast<std::size_t>(processor_id), precise_faults_);
+    auto borrower = std::make_unique<GuestThread>(mem_, monitor_.get(), static_cast<std::size_t>(processor_id), precise_faults_);
     borrower->regs().fill(0);
     borrower->regs()[13] = carrier.regs()[13] & ~7u;
     borrower->ext_regs().fill(0);
@@ -444,12 +436,6 @@ std::unique_ptr<GuestThread> Process::create_borrower(GuestThread& carrier) {
     return borrower;
 }
 
-// Borrower counterpart of unregister_thread(), in this order: tid routing is removed first, then
-// the exclusive monitor slot is cleared and the JIT freed, and only then is the processor id
-// released, so a concurrent create_borrower/clone_thread cannot reuse the id while this JIT still
-// exists. A borrower is never published as the process signal target, and only the borrowing host
-// thread names it as current (cleared by the caller before this), so no forwarding reader can
-// still hold it.
 void Process::destroy_borrower(std::unique_ptr<GuestThread> borrower, GuestThread& carrier) {
     if (!borrower) return;
     carrier.sigmask = borrower->sigmask;
@@ -471,7 +457,6 @@ void Process::register_thread(GuestThread* thread) {
     std::lock_guard<std::mutex> lock(threads_mutex_);
     threads_.push_back(thread);
 }
-
 int Process::run(const std::string& path, const std::vector<std::string>& argv, const std::vector<std::string>& envp) {
     if (!mem_.ok()) return 1;
 
@@ -552,19 +537,12 @@ int Process::run(const std::string& path, const std::vector<std::string>& argv, 
     install_terminate_reporter();
 
     thread_loop(*main_);
-    // Every return below retires what run() published, so destroying the Process afterwards cannot
-    // leave a signal handler with a freed main_. The target is retired while t_current_thread still
-    // names main_, then this host thread stops naming it.
     if (exiting_) {
-        // exit_group/fatal exit: other live threads would already have ended the host process, so
-        // main_ is the only registered thread. Its CLONE_CHILD_CLEARTID is not honoured on a
-        // process-wide exit.
         unregister_thread(*main_);
         set_current_thread(nullptr);
         return exit_status_;
     }
 
-    // The main thread called exit() while other threads may still run: wait for them.
     const int main_status = main_->exit_status;
     finish_thread(*main_);
     set_current_thread(nullptr);
@@ -670,29 +648,6 @@ bool Process::dispatch_stop(GuestThread& thread, const Stop& stop) {
     return false;
 }
 
-      
-// <-- THIS CLOSES THE if((stop.swi & 0xFF0000u) == kHostCallBase)
-        
-        if (first_time(kSeenUnexpectedSvc | stop.swi)) {
-            log("unexpected svc #0x%x at pc 0x%08x", stop.swi, stop.pc);
-        }
-        thread.regs()[0] = static_cast<std::uint32_t>(-ENOSYS);
-        return true;
-        
-    case StopKind::Interrupted:
-        return true;
-    case StopKind::MemoryFault:
-    case StopKind::Exception:
-        return fault_or_crash(thread, stop);
-    case StopKind::None:
-        log("guest stopped without a reason at pc 0x%08x", stop.pc);
-        request_exit(1);
-        if (thread_count() > 1) exit_host_process();
-        return false;
-    } // <-- THIS CLOSES THE switch (stop.kind)
-    
-    return false;
-} // <-- THIS CLOSES bool Process::dispatch_stop
 bool Process::fault_or_crash(GuestThread& thread, const Stop& stop) {
     if (deliver_fault(thread, stop)) return true;
     crash_report(stop, thread);
@@ -710,23 +665,10 @@ bool Process::after_stop(GuestThread& thread) {
 Process* Process::reporter_process = nullptr;
 
 // ---- abort recorder ----------------------------------------------------------------------------
-// The process can also die from a plain SIGABRT that the terminate reporter below never sees: the
-// message is "libc++abi: terminating" and nothing else, and Android's own crash dump may fail to
-// parse the guest mappings. This handler records, from the thread that aborts:
-//   - the host call stack (library, symbol, offset), which says whether the abort came from the
-//     translator, the GL driver, the JNI bridge or somewhere else;
-//   - the guest registers of the guest thread running on this host thread, its pc and lr resolved
-//     to library + offset, and every word on its stack that points into executable file-backed
-//     guest memory (a poor man's backtrace);
-//   - the recent JNI and EGL calls.
-// Every line goes to logcat (tag "zb-abort", priority F) and is appended to
-// <external files dir>/zb-abort.txt. Then control goes to the handler that was installed before
-// (the system's crash handler), so the usual crash dump and the exit status are unchanged.
 namespace {
 
 constexpr const char* kAbortTag = "zb-abort";
-// Same directory as zb-runtime-report.txt and zb-errors.txt. Change the package name if you rename it.
-constexpr const char* kAbortFile = "/storage/emulated/0/Android/data/com.zettabridge.launcher/files/zb-abort.txt";
+const std::string kAbortFile = get_app_files_dir() + "zb-abort.txt";
 constexpr int kMaxHostFrames = 40;
 constexpr int kMaxGuestStackHits = 40;
 constexpr std::uint32_t kGuestStackScanWords = 1024;  // 4 KiB above sp
@@ -759,21 +701,13 @@ _Unwind_Reason_Code collect_host_frame(_Unwind_Context* context, void* arg) {
 
 }  // namespace
 
-// The translator does not always throw when it cannot go on: a failed check inside it calls
-// std::terminate directly, and the process dies with the message "terminating" and a stripped
-// backtrace. Nothing can catch that, but the guest program counter of the thread it happened on
-// is the whole answer, and this thread still knows it.
 void Process::install_terminate_reporter() {
     static std::terminate_handler previous = nullptr;
     static std::once_flag once;
-    // One guest process has one Process, and it outlives everything: the handler needs it only to
-    // name the library an address belongs to.
     reporter_process = this;
     std::call_once(once, [] {
         previous = std::set_terminate([] {
             if (GuestThread* thread = Process::current_thread()) {
-                // The bare address says nothing: what is needed is the library and the offset in
-                // it, which is exactly what the crash report already resolves.
                 const std::uint32_t pc = thread->regs()[15];
                 const std::string where =
                     reporter_process != nullptr ? reporter_process->describe_address(pc) : std::string();
@@ -788,9 +722,7 @@ void Process::install_terminate_reporter() {
             std::abort();
         });
 
-        // The abort recorder (see the block above). Installed after the system's own handler, so
-        // that one is called last.
-        g_abort_fd = ::open(kAbortFile, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+        g_abort_fd = ::open(kAbortFile.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
         struct sigaction action;
         std::memset(&action, 0, sizeof action);
         action.sa_sigaction = +[](int sig, siginfo_t* info, void* context) {
@@ -864,8 +796,6 @@ void Process::install_terminate_reporter() {
                 }
                 abort_line("---- end of abort record ----");
             }
-            // Hand over to the handler that was installed before this one (the system's crash
-            // handler). If there was none, returning lets abort() reset the action and raise again.
             if ((g_previous_abort.sa_flags & SA_SIGINFO) != 0 && g_previous_abort.sa_sigaction != nullptr) {
                 g_previous_abort.sa_sigaction(sig, info, context);
             } else if (g_previous_abort.sa_handler != SIG_DFL && g_previous_abort.sa_handler != SIG_IGN &&
@@ -877,9 +807,10 @@ void Process::install_terminate_reporter() {
         sigemptyset(&action.sa_mask);
         if (sigaction(SIGABRT, &action, &g_previous_abort) != 0) {
             log("cannot install the abort recorder: %s", std::strerror(errno));
-        }
-
+}
         // The host call profiler: a background thread that turns the counters above into a file.
+        // DISABLED IN STOCK BUILD for maximum performance.
+        #ifndef ZB_STOCK_BUILD
         std::thread([] {
             const std::uint64_t frequency = tick_frequency();
             std::vector<std::uint64_t> seen_count(kProfileSlots, 0);
@@ -912,7 +843,7 @@ void Process::install_terminate_reporter() {
                     total_calls += delta_calls;
                     total_ticks += delta_ticks;
                 }
-                if (total_calls < 100) continue;  // an idle window: keep the last busy one on disk
+                if (total_calls < 100) continue;
 
                 std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.ticks > b.ticks; });
                 const double total_ms = 1000.0 * static_cast<double>(total_ticks) / static_cast<double>(frequency);
@@ -945,16 +876,11 @@ void Process::install_terminate_reporter() {
                 }
             }
         }).detach();
+        #endif
 
-        // The guest PC sampler: where does a busy guest thread spend its time? Every 5 ms it reads
-        // the program counter that each guest thread last committed (block granularity: translated
-        // code only writes it back when a block ends) and whether the thread is inside a host call
-        // or a syscall. Every 10 seconds it writes zb-pcprofile.txt, replacing the previous one:
-        // for the three threads that used the most CPU in the window (taken from /proc, so sleeping
-        // threads never show up), the split between translated code, host calls and syscalls, then
-        // the libraries the translated code was in and its hottest 64-byte blocks. A guest thread
-        // that is parked sits in the guest's own start-up program ("zbhost"); those samples are
-        // left out of the percentages.
+        // The guest PC sampler
+        // DISABLED IN STOCK BUILD for maximum performance.
+        #ifndef ZB_STOCK_BUILD
         std::thread([] {
             struct Counters {
                 std::uint32_t samples = 0;
@@ -962,9 +888,8 @@ void Process::install_terminate_reporter() {
                 std::uint32_t in_syscall = 0;
             };
             std::unordered_map<std::int32_t, Counters> per_thread;
-            std::unordered_map<std::uint64_t, std::uint32_t> hits;  // (tid << 32) | (pc >> 6)
+            std::unordered_map<std::uint64_t, std::uint32_t> hits;
             std::unordered_map<std::int32_t, std::uint64_t> cpu_before;
-            // user + system time of a thread so far, in clock ticks (usually 10 ms each)
             auto thread_cpu_ticks = [](std::int32_t tid) -> std::uint64_t {
                 char path[64];
                 std::snprintf(path, sizeof path, "/proc/self/task/%d/stat", static_cast<int>(tid));
@@ -1022,8 +947,7 @@ void Process::install_terminate_reporter() {
                 const double seconds = std::chrono::duration<double>(now - window_start).count();
                 window_start = now;
 
-                // The three threads that used the most CPU since the last report.
-                std::vector<std::pair<std::uint64_t, std::int32_t>> busiest;  // (cpu ticks, tid)
+                std::vector<std::pair<std::uint64_t, std::int32_t>> busiest;
                 for (const auto& [tid, counters] : per_thread) {
                     (void)counters;
                     const std::uint64_t total = thread_cpu_ticks(tid);
@@ -1035,8 +959,6 @@ void Process::install_terminate_reporter() {
                 if (busiest.size() > 3) busiest.resize(3);
                 const double window_ticks = seconds * static_cast<double>(ticks_per_second);
 
-                // A window with next to no host calls is a game that has stopped (or sits in a menu
-                // that draws nothing): write what every guest thread is doing and waiting for.
                 std::uint64_t calls_now = 0;
                 for (std::size_t i = 0; i < kProfileSlots; ++i) calls_now += g_host_call_count[i].load(std::memory_order_relaxed);
                 const std::uint64_t calls_in_window = calls_now - std::min(calls_now, calls_before);
@@ -1045,8 +967,8 @@ void Process::install_terminate_reporter() {
                     struct Snapshot {
                         std::int32_t tid;
                         std::uint32_t pc, lr, sp;
-                        std::uint64_t pending, blocked;  // guest signals queued for the thread, and its mask
-                        bool in_host_syscall;            // asleep in a host syscall a guest signal can break
+                        std::uint64_t pending, blocked;
+                        bool in_host_syscall;
                     };
                     std::vector<Snapshot> snapshots;
                     {
@@ -1108,8 +1030,6 @@ void Process::install_terminate_reporter() {
                                           process->describe_address(snap.pc & ~1u).c_str(), snap.lr,
                                           process->describe_address(snap.lr & ~1u).c_str());
                             freeze += row;
-                            // Bit n-1 of these masks is guest signal n. A signal that is pending and not
-                            // blocked for a thread that sleeps in a syscall is one that never arrived.
                             std::snprintf(row, sizeof row, "  signals: pending %016llx, blocked %016llx, undelivered %016llx, in host syscall %d\n",
                                           static_cast<unsigned long long>(snap.pending),
                                           static_cast<unsigned long long>(snap.blocked),
@@ -1139,7 +1059,7 @@ void Process::install_terminate_reporter() {
                 if (busiest.empty() || static_cast<double>(busiest.front().first) < 0.05 * window_ticks) {
                     per_thread.clear();
                     hits.clear();
-                    continue;  // nothing used the CPU: keep the last report on disk
+                    continue;
                 }
 
                 std::string text;
@@ -1163,8 +1083,7 @@ void Process::install_terminate_reporter() {
                                   total > 0 ? 100.0 * counters.in_syscall / total : 0.0);
                     text += line;
 
-                    // Resolve this thread's hit blocks to libraries (the mapping table is guarded by mm_mutex).
-                    std::vector<std::pair<std::uint32_t, std::uint32_t>> blocks;  // (hits, pc)
+                    std::vector<std::pair<std::uint32_t, std::uint32_t>> blocks;
                     for (const auto& [key, count] : hits) {
                         if (static_cast<std::int32_t>(key >> 32) != tid) continue;
                         blocks.emplace_back(count, static_cast<std::uint32_t>(key & 0xFFFFFFFFu) << 6);
@@ -1172,7 +1091,7 @@ void Process::install_terminate_reporter() {
                     std::sort(blocks.begin(), blocks.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
                     std::unordered_map<std::string, std::uint32_t> by_library;
                     std::vector<std::pair<std::uint32_t, std::string>> hot;
-                    std::uint32_t counted = 0;  // translated-code samples outside the parked start-up program
+                    std::uint32_t counted = 0;
                     {
                         std::lock_guard<std::mutex> mm(process->mm_mutex());
                         for (const auto& [count, pc] : blocks) {
@@ -1213,21 +1132,17 @@ void Process::install_terminate_reporter() {
                 per_thread.clear();
                 hits.clear();
                 write_text_file(kPcProfileFile, text);
-                if (busiest.front().first > busiest_cpu) {
-                    busiest_cpu = busiest.front().first;
+                if (busiest.front().first;
                     write_text_file(kPcProfileBestFile, text);
                 }
             }
         }).detach();
+        #endif
     });
 }
 
 void Process::thread_loop(GuestThread& thread) {
     set_current_thread(&thread);
-    // The translator throws for what it cannot translate (an instruction its backend does not
-    // implement), and nothing above this loop can catch it: the process aborts with "terminating"
-    // and no hint of which instruction it was. The program counter and the reason are the whole
-    // answer, so they go into the report and this guest thread ends instead.
     try {
         while (dispatch_stop(thread, thread.run()) && after_stop(thread)) {
         }
@@ -1287,9 +1202,6 @@ std::int32_t Process::clone_thread(GuestThread& parent, std::uint32_t flags, std
 
 void Process::thread_main(std::unique_ptr<GuestThread> thread) {
     thread_loop(*thread);
-    // Stop naming the thread before finish_thread() and the unique_ptr free it: a host signal
-    // landing here afterwards must not take the forwarding fast path to a freed GuestThread.
-    // Handlers on this host thread run synchronously with this code, so there is no race.
     set_current_thread(nullptr);
     finish_thread(*thread);
 }
@@ -1306,7 +1218,6 @@ void Process::finish_thread(GuestThread& thread) {
 }
 
 void Process::unregister_thread(GuestThread& thread) {
-    // Waits for in-flight forwarding handlers, so the caller may free the thread afterwards.
     clear_process_signal_target(&thread);
     monitor_->ClearProcessor(thread.processor_id());
     std::lock_guard<std::mutex> lock(threads_mutex_);
@@ -1335,7 +1246,6 @@ void Process::crash_report(const Stop& stop, GuestThread& thread) const {
                       stop.pc);
     }
     log("%s", summary);
-    // Recorded before request_exit, so the crash and not the exit status reaches the report.
     runtime_report().note_guest_exit(std::string(summary) + " in " + describe_address(stop.pc));
     const auto& r = thread.regs();
     for (int i = 0; i < 16; i += 4) {
@@ -1352,8 +1262,6 @@ void Process::crash_report(const Stop& stop, GuestThread& thread) const {
     log("  pc in %s", describe_address(stop.pc).c_str());
     log("  lr in %s", describe_address(r[14]).c_str());
 
-    // Bounded, allocation-light crash detail for RuntimeReport: this must never crash inside
-    // the crash path, since it runs while the process is already dying.
     char regs_line[256];
     std::snprintf(regs_line, sizeof regs_line,
                   "r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x "
@@ -1392,3 +1300,4 @@ void Process::crash_report(const Stop& stop, GuestThread& thread) const {
 }
 
 }  // namespace zb
+```
