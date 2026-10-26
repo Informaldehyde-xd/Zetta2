@@ -98,23 +98,18 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     message(STATUS "Configuring ZettaBridge STOCK build (Optimized)")
     
-    # 1. Define the macro so C++ knows to disable profilers
     target_compile_definitions(zbcore PRIVATE ZB_STOCK_BUILD)
     
-    # 2. Aggressive Compiler Optimizations (Exceptions kept ON for Dynarmic)
+    # Removed -ffast-math and -flto (they break Unity/Mono)
     target_compile_options(zbcore PRIVATE 
         -O3 
-        -flto 
-        -ffast-math 
     )
     
-    # 3. Linker Optimizations (Strips symbols, removes dead code, LTO)
+    # Removed -flto (it strips necessary JNI symbols)
     target_link_options(zbcore PRIVATE 
-        -flto 
         -Wl,--gc-sections 
         -s 
     )
 else()
     message(STATUS "Configuring ZettaBridge DEBUG build (Profiling Enabled)")
 endif()
-# =====================================================================
