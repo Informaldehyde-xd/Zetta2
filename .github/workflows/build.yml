@@ -1,20 +1,4 @@
 # Builds the ZettaBridge launcher APK on GitHub's servers (no PC needed).
-#
-# Start it by hand: Actions tab -> "Build launcher" -> Run workflow. It also runs on every push to main.
-# The finished APK is attached to the run: open the run, scroll to "Artifacts", download, unzip, install.
-#
-# What it does, in the repo's own order:
-#   1. fetch Dynarmic (the translator engine) and apply the repo's two patches to it
-#   2. extract the arm32 Android system libraries from Google's GSI image (cached after the first run)
-#   3. build the arm32 guest pieces, then libzbridge.so + libzbproxy.so for arm64 (the slow part)
-#   4. pack them into build/launcher with tools/make_launcher_bundle.sh
-#   5. build the launcher APK with Gradle
-#
-# Optional signing (so every build can be installed over the previous one without uninstalling):
-# add four repository secrets (Settings -> Secrets and variables -> Actions):
-#   KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
-# Without them the workflow builds a debug APK, which is signed with a different temporary key
-# each run, so Android will make you uninstall the old launcher first (and you lose imported games).
 name: Build launcher
 
 on:
@@ -50,7 +34,6 @@ jobs:
       - name: Make the repo's scripts executable
         run: |
           set -eu
-          # A repo made from a zip loses the executable flag, so every script needs it back.
           chmod +x tools/*.sh tools/*.py android/launcher/gradlew
           ls -l tools | head -30
 
@@ -112,8 +95,6 @@ jobs:
         if: steps.sysroot-cache.outputs.cache-hit != 'true'
         run: |
           set -eu
-          # Fallback if Google's download link has expired: put a sysroot-prebuilt.tar.xz that
-          # contains the folder "sysroot/" in the repo root and it is used instead.
           if [ -f sysroot-prebuilt.tar.xz ]; then
             tar -xJf sysroot-prebuilt.tar.xz
           else
@@ -132,30 +113,6 @@ jobs:
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ccache-android-arm64
-
-      - name: Optional - keep symbols in libzbridge.so
-        if: ${{ inputs.keep_symbols }}
-        run: |
-          set -eu
-          sed -i '/target_link_options(zbridge /s/ -Wl,--strip-all//' core/CMakeLists.txt
-          grep -n "target_link_options(zbridge" core/CMakeLists.txt
-
-      - name: Build libzbridge.so and libzbproxy.so (arm64)
-        run: |
-          set -eu
-          mkdir -p build/boost-headers
-          ln -sfn /usr/include/boost build/boost-headers/boost
-          cmake -S . -B build/android-arm64 -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release -DZB_BUILD_TESTS=OFF \
-            -DBoost_INCLUDE_DIR="$PWD/build/boost-headers" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          # Two jobs: GitHub's free runners have 2 CPUs and 7 GB of memory, and Dynarmic is heavy.
-          ninja -C build/android-arm64 -j2 zbridge zbproxy
-
-      - name: Pack the launcher inputs
-        run: tools/make_launcher_bundle.sh
 
       - name: Prepare the release key (optional)
         id: key
@@ -176,37 +133,82 @@ jobs:
               echo "keyPassword=$KEY_PASSWORD"
             } > "$HOME/.zettabridge/signing.properties"
             echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "Release key found: building a signed release APK."
+            echo "Release key found."
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "No release key: building a debug APK."
+            echo "No release key: release APK will be unsigned."
           fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build the launcher APK
+      # =====================================================================
+      # 1. BUILD DEBUG (Profiling enabled, slower but catches all logs)
+      # =====================================================================
+      - name: Build C++ (Debug)
+        run: |
+          set -eu
+          mkdir -p build/boost-headers
+          ln -sfn /usr/include/boost build/boost-headers/boost
+          cmake -S . -B build/android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Debug -DZB_BUILD_TESTS=OFF \
+            -DBoost_INCLUDE_DIR="$PWD/build/boost-headers" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ninja -C build/android-arm64 -j2 zbridge zbproxy
+
+      - name: Pack Launcher (Debug)
+        run: tools/make_launcher_bundle.sh
+
+      - name: Build Launcher APK (Debug)
         working-directory: android/launcher
         run: |
-          set -eu
           chmod +x ./gradlew
-          if [ "${{ steps.key.outputs.signed }}" = "true" ]; then
-            ./gradlew --no-daemon assembleRelease
-          else
-            ./gradlew --no-daemon assembleDebug
-          fi
+          ./gradlew --no-daemon assembleDebug
+          mkdir -p ../../out
+          cp app/build/outputs/apk/debug/*.apk ../../out/ZettaBridge-Debug.apk
 
-      - name: Collect the APK
+      # =====================================================================
+      # 2. BUILD STOCK (Release optimizations, profilers disabled)
+      # =====================================================================
+      - name: Build C++ (Stock/Release)
         run: |
           set -eu
-          mkdir -p out
-          cp android/launcher/app/build/outputs/apk/*/*.apk out/
-          ls -l out
+          # The CMakeLists we modified will apply -O3 and -flto here
+          cmake -S . -B build/android-arm64 -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release -DZB_BUILD_TESTS=OFF \
+            -DBoost_INCLUDE_DIR="$PWD/build/boost-headers" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ninja -C build/android-arm64 -j2 zbridge zbproxy
 
-      - name: Upload the APK
+      - name: Pack Launcher (Stock)
+        run: tools/make_launcher_bundle.sh
+
+      - name: Build Launcher APK (Stock)
+        working-directory: android/launcher
+        run: |
+          if [ "${{ steps.key.outputs.signed }}" = "true" ]; then
+            ./gradlew --no-daemon assembleRelease
+            cp app/build/outputs/apk/release/*.apk ../../out/ZettaBridge-Stock.apk
+          else
+            # If no key, build release (will be unsigned, can be signed via MT Manager later)
+            ./gradlew --no-daemon assembleRelease
+            cp app/build/outputs/apk/release/*.apk ../../out/ZettaBridge-Stock-UNSIGNED.apk
+          fi
+
+      # =====================================================================
+      # 3. UPLOAD
+      # =====================================================================
+      - name: List built APKs
+        run: ls -l out
+
+      - name: Upload Both APKs
         uses: actions/upload-artifact@v4
         with:
-          name: ZettaBridge-launcher-${{ github.run_number }}
+          name: ZettaBridge-Builds-${{ github.run_number }}
           path: out/*.apk
           retention-days: 30
 
