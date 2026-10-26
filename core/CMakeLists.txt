@@ -101,12 +101,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # 1. Define the macro so C++ knows to disable profilers
     target_compile_definitions(zbcore PRIVATE ZB_STOCK_BUILD)
     
-    # 2. Aggressive Compiler Optimizations
+    # 2. Aggressive Compiler Optimizations (Exceptions kept ON for Dynarmic)
     target_compile_options(zbcore PRIVATE 
         -O3 
         -flto 
-        -fno-exceptions 
-        -fno-rtti 
         -ffast-math 
         -fvisibility=hidden
     )
