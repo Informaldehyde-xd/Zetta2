@@ -280,14 +280,12 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
 
     // --- 4. DEFAULT DISPATCH ---
     Call call(*this, thread, index);
-    if (dispatch(call)) {
-        const std::uint64_t slot = g_recent_egl_next.fetch_add(1, std::memory_order_relaxed) % kRecentEglCalls;
-        g_recent_egl[slot].index.store(index, std::memory_order_relaxed);
-        g_recent_egl[slot].result.store(thread.regs()[0], std::memory_order_relaxed);
-        return true;
-    }
-    
-    log("EGL host call index %u has no generated handler", index);
+if (dispatch(call)) {
+    #ifndef ZB_STOCK_BUILD
+    const std::uint64_t slot = g_recent_egl_next.fetch_add(1, std::memory_order_relaxed) % kRecentEglCalls;
+    g_recent_egl[slot].index.store(index, std::memory_order_relaxed);
+    g_recent_egl[slot].result.store(thread.regs()[0], std::memory_order_relaxed);
+    #endif
     return true;
 }
 
