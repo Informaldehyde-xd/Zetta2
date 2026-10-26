@@ -94,12 +94,20 @@ GuestThread::GuestThread(GuestMemory& mem, Dynarmic::ExclusiveMonitor* monitor, 
     cfg.global_monitor = monitor;
     cfg.processor_id = processor_id;
     cfg.arch_version = Dynarmic::A32::ArchVersion::v8;
-    cfg.fastmem_pointer = static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(mem.base()));
-    cfg.coprocessors[15] = cp15_;
-    cfg.define_unpredictable_behaviour = true;
-    cfg.enable_cycle_counting = false;
-    cfg.check_halt_on_memory_access = precise_faults;
+cfg.fastmem_pointer = static_cast<std::uintptr_t>(reinterpret_cast<std::uintptr_t>(mem.base()));
+cfg.coprocessors[15] = cp15_;
+cfg.define_unpredictable_behaviour = true;
+cfg.enable_cycle_counting = false;
+
+#ifdef ZB_STOCK_BUILD
+    // Stock: Speed over accuracy
+    cfg.check_halt_on_memory_access = false; // Fast memory faults
+    cfg.code_cache_size = 128 * 1024 * 1024; // 128MB (No stutters from cache flushes)
+#else
+    // Debug: Accuracy over speed
+    cfg.check_halt_on_memory_access = precise_faults; 
     cfg.code_cache_size = code_cache_size;
+#endif
     if (tuning("little_endian")) cfg.always_little_endian = true;
     {
         const bool fast_fp = tuning("fast_fp");
