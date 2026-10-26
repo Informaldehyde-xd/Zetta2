@@ -86,7 +86,15 @@ if (ANDROID)
     add_library(zbjni_reflection_compile_test SHARED
         android/jni_reflection_compile_test.cpp
         android/jni_env_backend.cpp
-    # --- ZETTABRIDGE DUAL-BUILD CONFIGURATION ---
+    )
+    # zbcore supplies the zb/ headers and the portable descriptor helpers.
+    target_link_libraries(zbjni_reflection_compile_test PRIVATE zbcore)
+    target_compile_options(zbjni_reflection_compile_test PRIVATE -Wall -Wextra)
+    target_link_options(zbjni_reflection_compile_test PRIVATE -Wl,--no-undefined)
+endif()
+    # =====================================================================
+# ZETTABRIDGE DUAL-BUILD CONFIGURATION (Must be at the end of the file)
+# =====================================================================
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     message(STATUS "Configuring ZettaBridge STOCK build (Optimized)")
     
@@ -112,10 +120,4 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
 else()
     message(STATUS "Configuring ZettaBridge DEBUG build (Profiling Enabled)")
 endif()
-# ---------------------------------------------
-    )
-    # zbcore supplies the zb/ headers and the portable descriptor helpers.
-    target_link_libraries(zbjni_reflection_compile_test PRIVATE zbcore)
-    target_compile_options(zbjni_reflection_compile_test PRIVATE -Wall -Wextra)
-    target_link_options(zbjni_reflection_compile_test PRIVATE -Wl,--no-undefined)
-endif()
+# =====================================================================
