@@ -42,14 +42,16 @@ android {
         }
     }
     buildTypes {
-        debug {
-            isDebuggable = false
-        }
-        release {
-            isMinifyEnabled = false
-            if (hasReleaseKey) signingConfig = signingConfigs.getByName("release")
-        }
+    getByName("debug") {
+        applicationIdSuffix = ".debug"
+        versionNameSuffix = "-Debug"
     }
+    getByName("release") {
+        isMinifyEnabled = true // Shrinks the APK size
+        isShrinkResources = true
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
+}
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
