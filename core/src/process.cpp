@@ -596,33 +596,70 @@ bool Process::dispatch_stop(GuestThread& thread, const Stop& stop) {
             return fault_or_crash(thread, illegal);
         }
         if ((stop.swi & 0xFF0000u) == kHostCallBase) {
-            const std::uint32_t index = stop.swi & 0xFFFFu;
-            record_thread_activity(thread.tid, ThreadActivityKind::kHostCall, index);
-            // A host call is host C++ called from translated guest code, and an exception that
-            // escapes it has no frame above to catch it: the process dies with "terminating" and
-            // nothing else. The name of the call and the reason are worth far more than the
-            // abort, so they go into the report and the guest is stopped instead.
-            bool served = false;
-            const std::uint64_t host_call_started = read_ticks();
-            try {
-                served = host_call_handler_ && host_call_handler_(index, thread);
-            } catch (const std::exception& failure) {
-                const auto [failed_library, failed_name] = host_call_name(index);
-                std::string detail = std::string(failed_library) + ":" + failed_name + ": " + failure.what();
-                log("host call %s threw: %s", failed_name, failure.what());
-                runtime_report().note_jni_detail("host-call-threw", detail, true);
-                record_thread_activity_done(thread.tid);
-                request_exit(70);
-                return false;
-            } catch (...) {
-                const auto [failed_library, failed_name] = host_call_name(index);
-                log("host call %s threw a non-standard exception", failed_name);
-                runtime_report().note_jni_detail("host-call-threw",
-                                                 std::string(failed_library) + ":" + failed_name, true);
-                record_thread_activity_done(thread.tid);
-                request_exit(70);
-                return false;
-            }
+    const std::uint32_t index = stop.swi & 0xFFFFu;
+    
+    #ifndef ZB_STOCK_BUILD
+    record_thread_activity(thread.tid, ThreadActivityKind::kHostCall, index);
+    #endif
+    
+    // A host call is host C++ called from translated guest code, and an exception that
+    // escapes it has no frame above to catch it: the process dies with "terminating" and
+    // nothing else. The name of the call and the reason are worth far more than the
+    // abort, so they go into the report and the guest is stopped instead.
+    bool served = false;
+    
+    #ifndef ZB_STOCK_BUILD
+    const std::uint64_t host_call_started = read_ticks();
+    #endif
+    
+    try {
+        served = host_call_handler_ && host_call_handler_(index, thread);
+    } catch (const std::exception& failure) {
+        const auto [failed_library, failed_name] = host_call_name(index);
+        std::string detail = std::string(failed_library) + ":" + failed_name + ": " + failure.what();
+        log("host call %s threw: %s", failed_name, failure.what());
+        runtime_report().note_jni_detail("host-call-threw", detail, true);
+        
+        #ifndef ZB_STOCK_BUILD
+        record_thread_activity_done(thread.tid);
+        #endif
+        
+        request_exit(70);
+        return false;
+    } catch (...) {
+        const auto [failed_library, failed_name] = host_call_name(index);
+        log("host call %s threw a non-standard exception", failed_name);
+        runtime_report().note_jni_detail("host-call-threw",
+                                         std::string(failed_library) + ":" + failed_name, true);
+        
+        #ifndef ZB_STOCK_BUILD
+        record_thread_activity_done(thread.tid);
+        #endif
+        
+        request_exit(70);
+        return false;
+    }
+    
+    #ifndef ZB_STOCK_BUILD
+    account_host_call(index, host_call_started);
+    #endif
+    
+    if (served) {
+        #ifndef ZB_STOCK_BUILD
+        record_thread_activity_done(thread.tid);
+        #endif
+        return !exiting_;
+    }
+    const auto [library, name] = host_call_name(index);
+    if (first_time(kSeenHostCall | index)) {
+        log("host call %s:%s is not implemented yet", library, name);
+    }
+    // The guest keeps running with r0 = 0; the report is the only record that survives a
+    // device run, because OxygenOS drops our logcat output.
+    runtime_report().note_unimplemented_host_call(index, library, name);
+    thread.regs()[0] = 0;
+    return true;
+        }
             account_host_call(index, host_call_started);
             if (served) {
                 record_thread_activity_done(thread.tid);
