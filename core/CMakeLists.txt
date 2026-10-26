@@ -86,6 +86,33 @@ if (ANDROID)
     add_library(zbjni_reflection_compile_test SHARED
         android/jni_reflection_compile_test.cpp
         android/jni_env_backend.cpp
+    # --- ZETTABRIDGE DUAL-BUILD CONFIGURATION ---
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Configuring ZettaBridge STOCK build (Optimized)")
+    
+    # 1. Define the macro so C++ knows to disable profilers
+    target_compile_definitions(zbcore PRIVATE ZB_STOCK_BUILD)
+    
+    # 2. Aggressive Compiler Optimizations
+    target_compile_options(zbcore PRIVATE 
+        -O3 
+        -flto 
+        -fno-exceptions 
+        -fno-rtti 
+        -ffast-math 
+        -fvisibility=hidden
+    )
+    
+    # 3. Linker Optimizations (Strips symbols, removes dead code, LTO)
+    target_link_options(zbcore PRIVATE 
+        -flto 
+        -Wl,--gc-sections 
+        -s 
+    )
+else()
+    message(STATUS "Configuring ZettaBridge DEBUG build (Profiling Enabled)")
+endif()
+# ---------------------------------------------
     )
     # zbcore supplies the zb/ headers and the portable descriptor helpers.
     target_link_libraries(zbjni_reflection_compile_test PRIVATE zbcore)
