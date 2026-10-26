@@ -332,10 +332,16 @@ std::string Process::translate_path(const char* guest_path) const {
         path == "/system/lib/libGLESv1_CM.so" || path == "/system/lib/libandroid.so" ||
         path == "/system/lib/libjnigraphics.so") {
         
+        // 1. Check the game's APK folder first
         std::string game_dir = exe_path_.substr(0, exe_path_.find_last_of('/'));
-        std::string stub = game_dir + "/" + std::string(path.substr(12));
+        std::string game_stub = game_dir + "/" + std::string(path.substr(12));
+        if (::access(game_stub.c_str(), F_OK) == 0) return game_stub;
         
-        if (::access(stub.c_str(), F_OK) == 0) return stub;
+        // 2. THE VIVO FIX: Fallback to ZettaBridge's internal sysroot
+        if (!sysroot_.empty()) {
+            std::string sysroot_stub = sysroot_ + "/system/lib/" + std::string(path.substr(12));
+            if (::access(sysroot_stub.c_str(), F_OK) == 0) return sysroot_stub;
+        }
     }
     // -----------------------------------------------
 
