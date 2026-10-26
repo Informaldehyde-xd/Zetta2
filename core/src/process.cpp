@@ -1300,4 +1300,3 @@ void Process::crash_report(const Stop& stop, GuestThread& thread) const {
 }
 
 }  // namespace zb
-```
