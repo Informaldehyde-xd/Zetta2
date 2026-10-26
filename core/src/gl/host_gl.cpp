@@ -50,8 +50,10 @@ void HostGl::Call::fail(GLenum error, const char* reason) {
 void HostGl::reject(Call& call, GLenum error, const char* reason) {
     const char* name = gl_host_call_name(call.index());
     log("GLES %s rejected: %s", name, reason);
+    
     // Guests rarely call glGetError, so a rejection is otherwise silent (a texture that never
     // got its pixels renders black). Count them, and keep the first few with their arguments.
+    #ifndef ZB_STOCK_BUILD
     static std::atomic<std::uint64_t> rejections{0};
     const std::uint64_t number = ++rejections;
     runtime_report().note_gl_detail("rejections", std::to_string(number), true);
@@ -61,6 +63,8 @@ void HostGl::reject(Call& call, GLenum error, const char* reason) {
                       call.arg(1), call.arg(2), call.arg(3));
         runtime_report().note_gl_detail("rejection-" + std::to_string(number), text, false);
     }
+    #endif
+    
     backend_.set_error(error);
 }
 
@@ -83,23 +87,22 @@ bool gl_trace_enabled() {
 bool HostGl::handle_host_call(std::uint32_t index, GuestThread& thread) {
     if (!is_gl_host_call(index)) return false;
     const char* name = gl_host_call_name(index);
+    
     if (gl_trace_enabled()) {
         log("GLES trace: %s(0x%x, 0x%x, 0x%x, 0x%x)", name, thread.regs()[0], thread.regs()[1],
             thread.regs()[2], thread.regs()[3]);
     }
+    
     #ifndef ZB_STOCK_BUILD
-const std::uint64_t host_tid = static_cast<std::uint64_t>(::syscall(SYS_gettid));
-runtime_report().note_gl_call(name, host_tid);
-const std::uint64_t egl_generation = runtime_report().egl_current_generation();
-if (egl_generation != gl_thread_sampled_generation_) {
-    gl_thread_sampled_generation_ = egl_generation;
-    runtime_report().note_gl_thread(host_tid);
-}
-#endif
+    const std::uint64_t host_tid = static_cast<std::uint64_t>(::syscall(SYS_gettid));
+    runtime_report().note_gl_call(name, host_tid);
+    const std::uint64_t egl_generation = runtime_report().egl_current_generation();
     if (egl_generation != gl_thread_sampled_generation_) {
         gl_thread_sampled_generation_ = egl_generation;
         runtime_report().note_gl_thread(host_tid);
     }
+    #endif
+    
     if (!egl_context_checked_) {
         egl_context_checked_ = true;
         if (egl_context_probe_) runtime_report().note_gl_egl_context(egl_context() != 0);
