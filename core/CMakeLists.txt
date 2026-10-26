@@ -106,7 +106,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
         -O3 
         -flto 
         -ffast-math 
-        -fvisibility=hidden
     )
     
     # 3. Linker Optimizations (Strips symbols, removes dead code, LTO)
