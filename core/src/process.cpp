@@ -578,72 +578,6 @@ bool Process::dispatch_stop(GuestThread& thread, const Stop& stop) {
         if (stop.swi == 0) {
             if (handle_syscall(*this, thread)) return true;
             if (!exiting_ && thread.call_depth > 0) {
-                // bionic has already released this thread's TLS and stack; nothing may run on it.
-                log("guest thread exited inside a host-to-guest call");
-                request_exit(1);
-                exit_host_process();
-            }
-            if (exiting_ && thread_count() > 1) exit_host_process();
-            return false;
-        }
-        if (stop.swi == kHostReturnSwi) {
-            // GuestThread::call consumes its own return; any other one is an illegal instruction.
-            if (thread.call_depth == 0) log("host return svc outside a host-to-guest call at pc 0x%08x", stop.pc - 4);
-            Stop illegal;
-            illegal.kind = StopKind::Exception;
-            illegal.exception = Dynarmic::A32::Exception::UndefinedInstruction;
-            illegal.pc = stop.pc - 4;
-            return fault_or_crash(thread, illegal);
-        }
-        if ((stop.swi & 0xFF0000u) == kHostCallBase) {
-    const std::uint32_t index = stop.swi & 0xFFFFu;
-    
-    #ifndef ZB_STOCK_BUILD
-    record_thread_activity(thread.tid, ThreadActivityKind::kHostCall, index);
-    #endif
-    
-    // A host call is host C++ called from translated guest code, and an exception that
-    // escapes it has no frame above to catch it: the process dies with "terminating" and
-    // nothing else. The name of the call and the reason are worth far more than the
-    // abort, so they go into the report and the guest is stopped instead.
-    bool served = false;
-    
-    #ifndef ZB_STOCK_BUILD
-    const std::uint64_t host_call_started = read_ticks();
-    #endif
-    
-    try {
-        served = host_call_handler_ && host_call_handler_(index, thread);
-    } catch (const std::exception& failure) {
-        const auto [failed_library, failed_name] = host_call_name(index);
-        std::string detail = std::string(failed_library) + ":" + failed_name + ": " + failure.what();
-        log("host call %s threw: %s", failed_name, failure.what());
-        runtime_report().note_jni_detail("host-call-threw", detail, true);
-        
-        #ifndef ZB_STOCK_BUILD
-        record_thread_activity_done(thread.tid);
-        #endif
-        
-        request_exit(70);
-        return false;
-    } catch (...) {
-        const auto [failed_library, failed_name] = host_call_name(index);
-        log("host call %s threw a non-standard exception", failed_name);
-        runtime_report().note_jni_detail("host-call-threw",
-                                         std::string(failed_library) + ":" + failed_name, true);
-        
-        #ifndef ZB_STOCK_BUILD
-        record_thread_activity_done(thread.tid);
-        #endif
-        
-        request_exit(70);
-        return false;
-bool Process::dispatch_stop(GuestThread& thread, const Stop& stop) {
-    switch (stop.kind) {
-    case StopKind::Svc:
-        if (stop.swi == 0) {
-            if (handle_syscall(*this, thread)) return true;
-            if (!exiting_ && thread.call_depth > 0) {
                 log("guest thread exited inside a host-to-guest call");
                 request_exit(1);
                 exit_host_process();
@@ -713,7 +647,31 @@ bool Process::dispatch_stop(GuestThread& thread, const Stop& stop) {
             runtime_report().note_unimplemented_host_call(index, library, name);
             thread.regs()[0] = 0;
             return true;
-        } // <-- THIS CLOSES THE if((stop.swi & 0xFF0000u) == kHostCallBase)
+        }
+        
+        if (first_time(kSeenUnexpectedSvc | stop.swi)) {
+            log("unexpected svc #0x%x at pc 0x%08x", stop.swi, stop.pc);
+        }
+        thread.regs()[0] = static_cast<std::uint32_t>(-ENOSYS);
+        return true;
+        
+    case StopKind::Interrupted:
+        return true;
+    case StopKind::MemoryFault:
+    case StopKind::Exception:
+        return fault_or_crash(thread, stop);
+    case StopKind::None:
+        log("guest stopped without a reason at pc 0x%08x", stop.pc);
+        request_exit(1);
+        if (thread_count() > 1) exit_host_process();
+        return false;
+    }
+    
+    return false;
+}
+
+      
+// <-- THIS CLOSES THE if((stop.swi & 0xFF0000u) == kHostCallBase)
         
         if (first_time(kSeenUnexpectedSvc | stop.swi)) {
             log("unexpected svc #0x%x at pc 0x%08x", stop.swi, stop.pc);
