@@ -37,7 +37,7 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         
         if (id == 0) {
             log("[ZB-METHOD] GetMethodID FAILED: %s %s", method.c_str(), signature.c_str());
-            backend.exception_clear(env); // FIX: Prevent ART assert abort
+            // FIX: Prevent ART assert abort
             return true;
         }
         const std::optional<std::string> shorty = shorty_from_signature(signature);
