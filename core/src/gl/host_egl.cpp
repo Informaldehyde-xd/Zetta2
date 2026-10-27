@@ -221,8 +221,10 @@ bool HostEgl::handle_host_call(std::uint32_t index, GuestThread& thread) {
         if (name != nullptr) {
             std::string s_name(name);
             if (s_name == "eglSwapBuffersWithDamageKHR" || s_name == "eglSwapBuffersWithDamageEXT" || s_name == "eglSwapBuffers") {
-                thread.regs()[0] = stubs_ ? stubs_("eglSwapBuffers") : 0;
-                return true;
+                if (stubs_) {
+                thread.regs()[0] = stubs_("eglSwapBuffers");
+                if (thread.regs()[0] != 0) return true;
+                }
             }
         }
     }
